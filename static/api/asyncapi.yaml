@@ -1,0 +1,7 @@
+asyncapi: 3.0.0
+info:
+  title: TravelTech IROPS Events
+  version: 0.1.0
+  description: Черновик. Заполняется на шаге 06.
+channels: {}
+operations: {}

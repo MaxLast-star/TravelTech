@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+                  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+                  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+                  xmlns:modeler="http://camunda.org/schema/modeler/1.0"
+                  id="Definitions_p05-booking"
+                  targetNamespace="http://travel-irops"
+                  exporter="Camunda Modeler" exporterVersion="5.0.0"
+                  modeler:executionPlatform="Camunda Cloud"
+                  modeler:executionPlatformVersion="8.5.0">
+  <bpmn:process id="p05-booking" name="P-05 Поиск и бронирование" isExecutable="true">
+    <bpmn:startEvent id="StartEvent_1" name="Заготовка" />
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_1">
+    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="p05-booking">
+      <bpmndi:BPMNShape id="StartEvent_1_di" bpmnElement="StartEvent_1">
+        <dc:Bounds x="180" y="100" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="176" y="143" width="46" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>
