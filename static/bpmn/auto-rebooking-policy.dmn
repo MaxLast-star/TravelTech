@@ -1,0 +1,120 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="https://www.omg.org/spec/DMN/20191111/MODEL/" xmlns:dmndi="https://www.omg.org/spec/DMN/20191111/DMNDI/" xmlns:dc="http://www.omg.org/spec/DMN/20180521/DC/" xmlns:modeler="http://camunda.org/schema/modeler/1.0" id="Definitions_auto_rebooking" name="Авто-политика перебронирования" namespace="http://travel-irops" exporter="Camunda Modeler" exporterVersion="5.44.0" modeler:executionPlatform="Camunda Cloud" modeler:executionPlatformVersion="8.5.0">
+  <decision id="auto-rebooking-policy" name="Авто-политика перебронирования">
+    <decisionTable id="DT_arp" hitPolicy="FIRST">
+      <input id="In_arp_1" label="Тип сбоя">
+        <inputExpression id="InEx_arp_1" typeRef="string"><text>disruptionType</text></inputExpression>
+      </input>
+      <input id="In_arp_2" label="Длительность задержки, мин">
+        <inputExpression id="InEx_arp_2" typeRef="number"><text>delayMinutes</text></inputExpression>
+      </input>
+      <input id="In_arp_3" label="Время до вылета, мин">
+        <inputExpression id="InEx_arp_3" typeRef="number"><text>minutesToDeparture</text></inputExpression>
+      </input>
+      <input id="In_arp_4" label="Согласие на авто-перебронирование с доплатой">
+        <inputExpression id="InEx_arp_4" typeRef="boolean"><text>autoConsent</text></inputExpression>
+      </input>
+      <input id="In_arp_5" label="Разница тарифа, ₽">
+        <inputExpression id="InEx_arp_5" typeRef="number"><text>fareDelta</text></inputExpression>
+      </input>
+      <output id="Out_arp_1" label="Исход авто-политики" name="policyOutcome" typeRef="string" />
+      <rule id="R_arp_1">
+        <description>Доплата без данного заранее согласия плательщика — решать нельзя (FR-DEC-03)</description>
+        <inputEntry id="InE_arp_1_1"><text>-</text></inputEntry>
+        <inputEntry id="InE_arp_1_2"><text>-</text></inputEntry>
+        <inputEntry id="InE_arp_1_3"><text>-</text></inputEntry>
+        <inputEntry id="InE_arp_1_4"><text>false</text></inputEntry>
+        <inputEntry id="InE_arp_1_5"><text>&gt; 0</text></inputEntry>
+        <outputEntry id="OutE_arp_1_1"><text>&quot;escalate&quot;</text></outputEntry>
+      </rule>
+      <rule id="R_arp_2">
+        <description>Отмена, до вылета не более 2 ч — ждать нечего, применяем лучший допустимый вариант</description>
+        <inputEntry id="InE_arp_2_1"><text>&quot;отмена&quot;</text></inputEntry>
+        <inputEntry id="InE_arp_2_2"><text>-</text></inputEntry>
+        <inputEntry id="InE_arp_2_3"><text>&lt;= 120</text></inputEntry>
+        <inputEntry id="InE_arp_2_4"><text>-</text></inputEntry>
+        <inputEntry id="InE_arp_2_5"><text>-</text></inputEntry>
+        <outputEntry id="OutE_arp_2_1"><text>&quot;auto&quot;</text></outputEntry>
+      </rule>
+      <rule id="R_arp_3">
+        <description>Отмена, до вылета больше 2 ч — ещё есть время на ответ, второе окно</description>
+        <inputEntry id="InE_arp_3_1"><text>&quot;отмена&quot;</text></inputEntry>
+        <inputEntry id="InE_arp_3_2"><text>-</text></inputEntry>
+        <inputEntry id="InE_arp_3_3"><text>&gt; 120</text></inputEntry>
+        <inputEntry id="InE_arp_3_4"><text>-</text></inputEntry>
+        <inputEntry id="InE_arp_3_5"><text>-</text></inputEntry>
+        <outputEntry id="OutE_arp_3_1"><text>&quot;wait&quot;</text></outputEntry>
+      </rule>
+      <rule id="R_arp_4">
+        <description>Misconnect, до вылета следующего сегмента не более 3 ч</description>
+        <inputEntry id="InE_arp_4_1"><text>&quot;misconnect&quot;</text></inputEntry>
+        <inputEntry id="InE_arp_4_2"><text>-</text></inputEntry>
+        <inputEntry id="InE_arp_4_3"><text>&lt;= 180</text></inputEntry>
+        <inputEntry id="InE_arp_4_4"><text>-</text></inputEntry>
+        <inputEntry id="InE_arp_4_5"><text>-</text></inputEntry>
+        <outputEntry id="OutE_arp_4_1"><text>&quot;auto&quot;</text></outputEntry>
+      </rule>
+      <rule id="R_arp_5">
+        <description>Misconnect, времени больше — второе окно</description>
+        <inputEntry id="InE_arp_5_1"><text>&quot;misconnect&quot;</text></inputEntry>
+        <inputEntry id="InE_arp_5_2"><text>-</text></inputEntry>
+        <inputEntry id="InE_arp_5_3"><text>&gt; 180</text></inputEntry>
+        <inputEntry id="InE_arp_5_4"><text>-</text></inputEntry>
+        <inputEntry id="InE_arp_5_5"><text>-</text></inputEntry>
+        <outputEntry id="OutE_arp_5_1"><text>&quot;wait&quot;</text></outputEntry>
+      </rule>
+      <rule id="R_arp_6">
+        <description>Задержка от 4 ч, до вылета не более 3 ч — план уже не спасти ожиданием</description>
+        <inputEntry id="InE_arp_6_1"><text>&quot;задержка&quot;</text></inputEntry>
+        <inputEntry id="InE_arp_6_2"><text>&gt;= 240</text></inputEntry>
+        <inputEntry id="InE_arp_6_3"><text>&lt;= 180</text></inputEntry>
+        <inputEntry id="InE_arp_6_4"><text>-</text></inputEntry>
+        <inputEntry id="InE_arp_6_5"><text>-</text></inputEntry>
+        <outputEntry id="OutE_arp_6_1"><text>&quot;auto&quot;</text></outputEntry>
+      </rule>
+      <rule id="R_arp_7">
+        <description>Задержка от 4 ч, до вылета больше 3 ч — второе окно</description>
+        <inputEntry id="InE_arp_7_1"><text>&quot;задержка&quot;</text></inputEntry>
+        <inputEntry id="InE_arp_7_2"><text>&gt;= 240</text></inputEntry>
+        <inputEntry id="InE_arp_7_3"><text>&gt; 180</text></inputEntry>
+        <inputEntry id="InE_arp_7_4"><text>-</text></inputEntry>
+        <inputEntry id="InE_arp_7_5"><text>-</text></inputEntry>
+        <outputEntry id="OutE_arp_7_1"><text>&quot;wait&quot;</text></outputEntry>
+      </rule>
+      <rule id="R_arp_8">
+        <description>Задержка от 1 до 4 ч — статус ещё может измениться, ждём</description>
+        <inputEntry id="InE_arp_8_1"><text>&quot;задержка&quot;</text></inputEntry>
+        <inputEntry id="InE_arp_8_2"><text>[60..240)</text></inputEntry>
+        <inputEntry id="InE_arp_8_3"><text>-</text></inputEntry>
+        <inputEntry id="InE_arp_8_4"><text>-</text></inputEntry>
+        <inputEntry id="InE_arp_8_5"><text>-</text></inputEntry>
+        <outputEntry id="OutE_arp_8_1"><text>&quot;wait&quot;</text></outputEntry>
+      </rule>
+      <rule id="R_arp_9">
+        <description>Задержка меньше часа — авто-решение несоразмерно, ждём</description>
+        <inputEntry id="InE_arp_9_1"><text>&quot;задержка&quot;</text></inputEntry>
+        <inputEntry id="InE_arp_9_2"><text>&lt; 60</text></inputEntry>
+        <inputEntry id="InE_arp_9_3"><text>-</text></inputEntry>
+        <inputEntry id="InE_arp_9_4"><text>-</text></inputEntry>
+        <inputEntry id="InE_arp_9_5"><text>-</text></inputEntry>
+        <outputEntry id="OutE_arp_9_1"><text>&quot;wait&quot;</text></outputEntry>
+      </rule>
+      <rule id="R_arp_10">
+        <description>Всё, что таблица не описала, уходит оператору (FR-DEC-04)</description>
+        <inputEntry id="InE_arp_10_1"><text>-</text></inputEntry>
+        <inputEntry id="InE_arp_10_2"><text>-</text></inputEntry>
+        <inputEntry id="InE_arp_10_3"><text>-</text></inputEntry>
+        <inputEntry id="InE_arp_10_4"><text>-</text></inputEntry>
+        <inputEntry id="InE_arp_10_5"><text>-</text></inputEntry>
+        <outputEntry id="OutE_arp_10_1"><text>&quot;escalate&quot;</text></outputEntry>
+      </rule>
+    </decisionTable>
+  </decision>
+  <dmndi:DMNDI>
+    <dmndi:DMNDiagram id="DMNDiagram_arp">
+      <dmndi:DMNShape id="DMNShape_arp" dmnElementRef="auto-rebooking-policy">
+        <dc:Bounds height="80" width="200" x="160" y="100" />
+      </dmndi:DMNShape>
+    </dmndi:DMNDiagram>
+  </dmndi:DMNDI>
+</definitions>

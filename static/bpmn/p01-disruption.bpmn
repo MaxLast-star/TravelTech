@@ -1,24 +1,463 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
-                  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
-                  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
-                  xmlns:modeler="http://camunda.org/schema/modeler/1.0"
-                  id="Definitions_p01-disruption"
-                  targetNamespace="http://travel-irops"
-                  exporter="Camunda Modeler" exporterVersion="5.0.0"
-                  modeler:executionPlatform="Camunda Cloud"
-                  modeler:executionPlatformVersion="8.5.0">
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:zeebe="http://camunda.org/schema/zeebe/1.0" xmlns:modeler="http://camunda.org/schema/modeler/1.0" id="Definitions_p01-disruption" targetNamespace="http://travel-irops" exporter="Camunda Modeler" exporterVersion="5.44.0" modeler:executionPlatform="Camunda Cloud" modeler:executionPlatformVersion="8.5.0">
+  <bpmn:message id="Message_disruption_detected" name="disruption.detected.v1" />
+  <bpmn:message id="Message_disruption_notified" name="disruption.notified.v1" />
+  <bpmn:message id="Message_disruption_resolved" name="disruption.resolved.v1" />
+  <bpmn:message id="Message_decision_requested" name="decision.requested.v1" />
+  <bpmn:message id="Message_decision_reminded" name="decision.reminded.v1" />
+  <bpmn:message id="Message_decision_submitted" name="decision.submitted.v1">
+    <bpmn:extensionElements>
+      <zeebe:subscription correlationKey="=disruptionId" />
+    </bpmn:extensionElements>
+  </bpmn:message>
+  <bpmn:error id="Error_rebooking_failed" name="Перебронирование не выполнено" errorCode="REBOOKING_FAILED" />
+  <bpmn:collaboration id="Collaboration_p01">
+    <bpmn:participant id="Participant_detection" name="Сервис детекции сбоя" />
+    <bpmn:participant id="Participant_system" name="TravelTech IROPS. Обработка сбоя рейса" processRef="p01-disruption" />
+    <bpmn:participant id="Participant_traveller" name="Путешественник" />
+    <bpmn:messageFlow id="MF1" name="disruption.detected.v1" sourceRef="Participant_detection" targetRef="P-01.S1" />
+    <bpmn:messageFlow id="MF4" name="disruption.notified.v1" sourceRef="P-01.E1" targetRef="Participant_traveller" />
+    <bpmn:messageFlow id="MF7" name="decision.requested.v1" sourceRef="P-01.M2" targetRef="Participant_traveller" />
+    <bpmn:messageFlow id="MF8" name="decision.reminded.v1" sourceRef="P-01.E4" targetRef="Participant_traveller" />
+    <bpmn:messageFlow id="MF10" name="decision.submitted.v1" sourceRef="Participant_traveller" targetRef="P-01.T3" />
+    <bpmn:messageFlow id="MF11" name="disruption.resolved.v1" sourceRef="P-01.M3" targetRef="Participant_traveller" />
+  </bpmn:collaboration>
   <bpmn:process id="p01-disruption" name="P-01 Обработка сбоя рейса" isExecutable="true">
-    <bpmn:startEvent id="StartEvent_1" name="Заготовка" />
+    <bpmn:startEvent id="P-01.S1" name="Сбой детектирован">
+      <bpmn:outgoing>P-01.F1</bpmn:outgoing>
+      <bpmn:messageEventDefinition id="MED_1" messageRef="Message_disruption_detected" />
+    </bpmn:startEvent>
+    <bpmn:serviceTask id="P-01.T1" name="Оценить влияние на план поездки">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="impact-assessment" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>P-01.F1</bpmn:incoming>
+      <bpmn:outgoing>P-01.F2</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:exclusiveGateway id="P-01.G1" name="План исполним?" default="P-01.F4">
+      <bpmn:incoming>P-01.F2</bpmn:incoming>
+      <bpmn:outgoing>P-01.F3</bpmn:outgoing>
+      <bpmn:outgoing>P-01.F4</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:exclusiveGateway id="P-01.G2" name="Есть годные варианты?">
+      <bpmn:incoming>P-01.F5</bpmn:incoming>
+      <bpmn:outgoing>P-01.F6</bpmn:outgoing>
+      <bpmn:outgoing>Flow_0vb6pvq</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:sequenceFlow id="P-01.F1" sourceRef="P-01.S1" targetRef="P-01.T1" />
+    <bpmn:sequenceFlow id="P-01.F2" sourceRef="P-01.T1" targetRef="P-01.G1" />
+    <bpmn:sequenceFlow id="P-01.F3" name="План исполним" sourceRef="P-01.G1" targetRef="P-01.E1">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=impactClass = "исполним"</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="P-01.F4" name="План под угрозой" sourceRef="P-01.G1" targetRef="P-01.T2" />
+    <bpmn:sequenceFlow id="P-01.F5" sourceRef="P-01.T2" targetRef="P-01.G2" />
+    <bpmn:sequenceFlow id="P-01.F6" name="Годных нет" sourceRef="P-01.G2" targetRef="P-01.G7">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=count(eligibleAlternatives) = 0</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="P-01.F11" sourceRef="P-01.M2" targetRef="P-01.G5" />
+    <bpmn:sequenceFlow id="P-01.F12" sourceRef="P-01.G5" targetRef="P-01.T3" />
+    <bpmn:sequenceFlow id="P-01.F13" name="Выбор получен" sourceRef="P-01.T3" targetRef="P-01.G6" />
+    <bpmn:sequenceFlow id="P-01.F14" sourceRef="P-01.B1" targetRef="P-01.T4" />
+    <bpmn:sequenceFlow id="P-01.F15" sourceRef="P-01.B2" targetRef="P-01.E4" />
+    <bpmn:sequenceFlow id="P-01.F16" sourceRef="P-01.T4" targetRef="P-01.G4" />
+    <bpmn:sequenceFlow id="P-01.F17" name="Применить автоматически" sourceRef="P-01.G4" targetRef="P-01.G6">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=policyOutcome = "auto"</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="P-01.F18" name="Ждать, второе окно" sourceRef="P-01.G4" targetRef="P-01.G5">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=policyOutcome = "wait"</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="P-01.F19" name="Эскалировать" sourceRef="P-01.G4" targetRef="P-01.G7" />
+    <bpmn:sequenceFlow id="P-01.F20" sourceRef="P-01.G6" targetRef="P-01.T5" />
+    <bpmn:sequenceFlow id="P-01.F21" sourceRef="P-01.T5" targetRef="P-01.M3" />
+    <bpmn:sequenceFlow id="P-01.F22" sourceRef="P-01.M3" targetRef="P-01.E2" />
+    <bpmn:sequenceFlow id="P-01.F23" sourceRef="P-01.B3" targetRef="P-01.G7" />
+    <bpmn:sequenceFlow id="P-01.F24" sourceRef="P-01.G7" targetRef="P-01.T6" />
+    <bpmn:sequenceFlow id="P-01.F25" sourceRef="P-01.T6" targetRef="P-01.E3" />
+    <bpmn:endEvent id="P-01.E1" name="Путешественник проинформирован">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="notification-send" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>P-01.F3</bpmn:incoming>
+      <bpmn:messageEventDefinition id="MED_3" messageRef="Message_disruption_notified" />
+    </bpmn:endEvent>
+    <bpmn:callActivity id="P-01.T2" name="Подобрать альтернативы (P-02)">
+      <bpmn:extensionElements>
+        <zeebe:calledElement processId="p02-alternatives" propagateAllChildVariables="false" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>P-01.F4</bpmn:incoming>
+      <bpmn:outgoing>P-01.F5</bpmn:outgoing>
+    </bpmn:callActivity>
+    <bpmn:sequenceFlow id="Flow_0vb6pvq" name="Есть годные" sourceRef="P-01.G2" targetRef="P-01.M2" />
+    <bpmn:intermediateThrowEvent id="P-01.M2" name="Запросить решение у ответственного">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="notification-send" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_0vb6pvq</bpmn:incoming>
+      <bpmn:outgoing>P-01.F11</bpmn:outgoing>
+      <bpmn:messageEventDefinition id="MED_5" messageRef="Message_decision_requested" />
+    </bpmn:intermediateThrowEvent>
+    <bpmn:exclusiveGateway id="P-01.G5">
+      <bpmn:incoming>P-01.F11</bpmn:incoming>
+      <bpmn:incoming>P-01.F18</bpmn:incoming>
+      <bpmn:outgoing>P-01.F12</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:receiveTask id="P-01.T3" name="Ожидать выбор альтернативы" messageRef="Message_decision_submitted">
+      <bpmn:incoming>P-01.F12</bpmn:incoming>
+      <bpmn:outgoing>P-01.F13</bpmn:outgoing>
+    </bpmn:receiveTask>
+    <bpmn:boundaryEvent id="P-01.B1" name="Ack-окно 20 минут" attachedToRef="P-01.T3">
+      <bpmn:outgoing>P-01.F14</bpmn:outgoing>
+      <bpmn:timerEventDefinition id="TED_1">
+        <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">PT20M</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:boundaryEvent id="P-01.B2" name="Напоминание через 10 минут" cancelActivity="false" attachedToRef="P-01.T3">
+      <bpmn:outgoing>P-01.F15</bpmn:outgoing>
+      <bpmn:timerEventDefinition id="TED_2">
+        <bpmn:timeDuration xsi:type="bpmn:tFormalExpression">PT10M</bpmn:timeDuration>
+      </bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:endEvent id="P-01.E4" name="Напоминание отправлено">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="notification-send" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>P-01.F15</bpmn:incoming>
+      <bpmn:messageEventDefinition id="MED_6" messageRef="Message_decision_reminded" />
+    </bpmn:endEvent>
+    <bpmn:exclusiveGateway id="P-01.G6">
+      <bpmn:incoming>P-01.F13</bpmn:incoming>
+      <bpmn:incoming>P-01.F17</bpmn:incoming>
+      <bpmn:outgoing>P-01.F20</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:exclusiveGateway id="P-01.G4" name="Исход авто-политики" default="P-01.F19">
+      <bpmn:incoming>P-01.F16</bpmn:incoming>
+      <bpmn:outgoing>P-01.F17</bpmn:outgoing>
+      <bpmn:outgoing>P-01.F18</bpmn:outgoing>
+      <bpmn:outgoing>P-01.F19</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:businessRuleTask id="P-01.T4" name="Применить авто-политику">
+      <bpmn:extensionElements>
+        <zeebe:calledDecision decisionId="auto-rebooking-policy" resultVariable="policyOutcome" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>P-01.F14</bpmn:incoming>
+      <bpmn:outgoing>P-01.F16</bpmn:outgoing>
+    </bpmn:businessRuleTask>
+    <bpmn:callActivity id="P-01.T5" name="Перебронировать (P-03)">
+      <bpmn:extensionElements>
+        <zeebe:calledElement processId="p03-rebooking" propagateAllChildVariables="false" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>P-01.F20</bpmn:incoming>
+      <bpmn:outgoing>P-01.F21</bpmn:outgoing>
+    </bpmn:callActivity>
+    <bpmn:boundaryEvent id="P-01.B3" name="Перебронирование не выполнено" attachedToRef="P-01.T5">
+      <bpmn:outgoing>P-01.F23</bpmn:outgoing>
+      <bpmn:errorEventDefinition id="EED_1" errorRef="Error_rebooking_failed" />
+    </bpmn:boundaryEvent>
+    <bpmn:exclusiveGateway id="P-01.G7">
+      <bpmn:incoming>P-01.F6</bpmn:incoming>
+      <bpmn:incoming>P-01.F19</bpmn:incoming>
+      <bpmn:incoming>P-01.F23</bpmn:incoming>
+      <bpmn:outgoing>P-01.F24</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:userTask id="P-01.T6" name="Разобрать сбой вручную">
+      <bpmn:extensionElements>
+        <zeebe:userTask />
+        <zeebe:assignmentDefinition candidateGroups="support" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>P-01.F24</bpmn:incoming>
+      <bpmn:outgoing>P-01.F25</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:intermediateThrowEvent id="P-01.M3" name="Уведомить о применённом решении">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="notification-send" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>P-01.F21</bpmn:incoming>
+      <bpmn:outgoing>P-01.F22</bpmn:outgoing>
+      <bpmn:messageEventDefinition id="MED_7" messageRef="Message_disruption_resolved" />
+    </bpmn:intermediateThrowEvent>
+    <bpmn:endEvent id="P-01.E2" name="Сбой закрыт">
+      <bpmn:incoming>P-01.F22</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:endEvent id="P-01.E3" name="Сбой закрыт оператором">
+      <bpmn:incoming>P-01.F25</bpmn:incoming>
+    </bpmn:endEvent>
   </bpmn:process>
   <bpmndi:BPMNDiagram id="BPMNDiagram_1">
-    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="p01-disruption">
-      <bpmndi:BPMNShape id="StartEvent_1_di" bpmnElement="StartEvent_1">
-        <dc:Bounds x="180" y="100" width="36" height="36" />
+    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="Collaboration_p01">
+      <bpmndi:BPMNShape id="Participant_detection_di" bpmnElement="Participant_detection" isHorizontal="true">
+        <dc:Bounds x="160" y="80" width="300" height="60" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Participant_system_di" bpmnElement="Participant_system" isHorizontal="true">
+        <dc:Bounds x="160" y="220" width="2140" height="800" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-01.S1_di" bpmnElement="P-01.S1">
+        <dc:Bounds x="240" y="542" width="36" height="36" />
         <bpmndi:BPMNLabel>
-          <dc:Bounds x="176" y="143" width="46" height="14" />
+          <dc:Bounds x="218" y="585" width="80" height="27" />
         </bpmndi:BPMNLabel>
       </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-01.T1_di" bpmnElement="P-01.T1">
+        <dc:Bounds x="330" y="520" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-01.G1_di" bpmnElement="P-01.G1" isMarkerVisible="true">
+        <dc:Bounds x="480" y="535" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="467" y="592" width="86" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-01.G2_di" bpmnElement="P-01.G2" isMarkerVisible="true">
+        <dc:Bounds x="840" y="535" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="834" y="486" width="63" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-01.E1_di" bpmnElement="P-01.E1">
+        <dc:Bounds x="487" y="392" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="389.5" y="390" width="87" height="40" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-01.T2_di" bpmnElement="P-01.T2">
+        <dc:Bounds x="670" y="520" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-01.M2_di" bpmnElement="P-01.M2">
+        <dc:Bounds x="1002" y="542" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="981" y="579" width="78" height="40" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-01.G5_di" bpmnElement="P-01.G5" isMarkerVisible="true">
+        <dc:Bounds x="1145" y="535" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-01.T3_di" bpmnElement="P-01.T3">
+        <dc:Bounds x="1280" y="520" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-01.E4_di" bpmnElement="P-01.E4">
+        <dc:Bounds x="1342" y="372" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1399" y="376" width="71" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-01.G6_di" bpmnElement="P-01.G6" isMarkerVisible="true">
+        <dc:Bounds x="1575" y="535" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-01.G4_di" bpmnElement="P-01.G4" isMarkerVisible="true">
+        <dc:Bounds x="1575" y="775" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1534" y="756" width="61" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-01.T4_di" bpmnElement="P-01.T4">
+        <dc:Bounds x="1420" y="760" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-01.T5_di" bpmnElement="P-01.T5">
+        <dc:Bounds x="1780" y="520" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-01.G7_di" bpmnElement="P-01.G7" isMarkerVisible="true">
+        <dc:Bounds x="1855" y="775" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-01.T6_di" bpmnElement="P-01.T6">
+        <dc:Bounds x="2010" y="760" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-01.M3_di" bpmnElement="P-01.M3">
+        <dc:Bounds x="2032" y="542" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="2107" y="620" width="71" height="40" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-01.E2_di" bpmnElement="P-01.E2">
+        <dc:Bounds x="2182" y="542" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="2167" y="585" width="66" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-01.E3_di" bpmnElement="P-01.E3">
+        <dc:Bounds x="2182" y="782" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="2167" y="825" width="66" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-01.B1_di" bpmnElement="P-01.B1">
+        <dc:Bounds x="1342" y="582" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1390" y="608" width="60" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-01.B2_di" bpmnElement="P-01.B2">
+        <dc:Bounds x="1342" y="502" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1395" y="486" width="79" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-01.B3_di" bpmnElement="P-01.B3">
+        <dc:Bounds x="1862" y="582" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1746" y="670" width="88" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="P-01.F1_di" bpmnElement="P-01.F1">
+        <di:waypoint x="276" y="560" />
+        <di:waypoint x="330" y="560" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-01.F2_di" bpmnElement="P-01.F2">
+        <di:waypoint x="430" y="560" />
+        <di:waypoint x="480" y="560" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-01.F3_di" bpmnElement="P-01.F3">
+        <di:waypoint x="505" y="535" />
+        <di:waypoint x="505" y="428" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="510" y="463" width="80" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-01.F4_di" bpmnElement="P-01.F4">
+        <di:waypoint x="530" y="560" />
+        <di:waypoint x="670" y="560" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="555" y="536" width="90" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-01.F5_di" bpmnElement="P-01.F5">
+        <di:waypoint x="770" y="560" />
+        <di:waypoint x="840" y="560" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-01.F6_di" bpmnElement="P-01.F6">
+        <di:waypoint x="865" y="585" />
+        <di:waypoint x="865" y="940" />
+        <di:waypoint x="1880" y="940" />
+        <di:waypoint x="1880" y="825" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="877" y="592" width="58" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-01.F11_di" bpmnElement="P-01.F11">
+        <di:waypoint x="1038" y="560" />
+        <di:waypoint x="1145" y="560" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-01.F12_di" bpmnElement="P-01.F12">
+        <di:waypoint x="1195" y="560" />
+        <di:waypoint x="1280" y="560" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-01.F13_di" bpmnElement="P-01.F13">
+        <di:waypoint x="1380" y="560" />
+        <di:waypoint x="1575" y="560" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1453" y="536" width="79" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-01.F14_di" bpmnElement="P-01.F14">
+        <di:waypoint x="1360" y="618" />
+        <di:waypoint x="1360" y="800" />
+        <di:waypoint x="1420" y="800" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-01.F15_di" bpmnElement="P-01.F15">
+        <di:waypoint x="1360" y="502" />
+        <di:waypoint x="1360" y="408" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-01.F16_di" bpmnElement="P-01.F16">
+        <di:waypoint x="1520" y="800" />
+        <di:waypoint x="1575" y="800" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-01.F17_di" bpmnElement="P-01.F17">
+        <di:waypoint x="1600" y="775" />
+        <di:waypoint x="1600" y="585" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1607" y="671" width="76" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-01.F18_di" bpmnElement="P-01.F18">
+        <di:waypoint x="1600" y="825" />
+        <di:waypoint x="1600" y="900" />
+        <di:waypoint x="1170" y="900" />
+        <di:waypoint x="1170" y="585" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1608" y="856" width="74" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-01.F19_di" bpmnElement="P-01.F19">
+        <di:waypoint x="1625" y="800" />
+        <di:waypoint x="1855" y="800" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1621" y="776" width="73" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-01.F20_di" bpmnElement="P-01.F20">
+        <di:waypoint x="1625" y="560" />
+        <di:waypoint x="1780" y="560" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-01.F21_di" bpmnElement="P-01.F21">
+        <di:waypoint x="1880" y="560" />
+        <di:waypoint x="2032" y="560" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-01.F22_di" bpmnElement="P-01.F22">
+        <di:waypoint x="2068" y="560" />
+        <di:waypoint x="2182" y="560" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-01.F23_di" bpmnElement="P-01.F23">
+        <di:waypoint x="1880" y="618" />
+        <di:waypoint x="1880" y="800" />
+        <di:waypoint x="1880" y="775" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-01.F24_di" bpmnElement="P-01.F24">
+        <di:waypoint x="1905" y="800" />
+        <di:waypoint x="2010" y="800" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-01.F25_di" bpmnElement="P-01.F25">
+        <di:waypoint x="2110" y="800" />
+        <di:waypoint x="2182" y="800" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_0vb6pvq_di" bpmnElement="Flow_0vb6pvq">
+        <di:waypoint x="890" y="560" />
+        <di:waypoint x="1002" y="560" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="894" y="536" width="63" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="Participant_traveller_di" bpmnElement="Participant_traveller" isHorizontal="true">
+        <dc:Bounds x="490" y="80" width="1810" height="60" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="MF1_di" bpmnElement="MF1">
+        <di:waypoint x="258" y="140" />
+        <di:waypoint x="258" y="542" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="267" y="426" width="82" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="MF4_di" bpmnElement="MF4">
+        <di:waypoint x="505" y="392" />
+        <di:waypoint x="505" y="140" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="520" y="274" width="87" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="MF7_di" bpmnElement="MF7">
+        <di:waypoint x="1020" y="542" />
+        <di:waypoint x="1020" y="140" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="910" y="263" width="87" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="MF8_di" bpmnElement="MF8">
+        <di:waypoint x="1360" y="372" />
+        <di:waypoint x="1360" y="140" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1198" y="316" width="84" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="MF10_di" bpmnElement="MF10">
+        <di:waypoint x="1290" y="140" />
+        <di:waypoint x="1290" y="520" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1377" y="274" width="85" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="MF11_di" bpmnElement="MF11">
+        <di:waypoint x="2050" y="542" />
+        <di:waypoint x="2050" y="140" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1940" y="354" width="87" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
     </bpmndi:BPMNPlane>
   </bpmndi:BPMNDiagram>
 </bpmn:definitions>

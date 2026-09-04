@@ -2,9 +2,7 @@ node_modules/
 build/
 .docusaurus/
 .cache-loader/
-
-# Рабочая папка для агентов: кейс, промпты, соглашения, хендоффы.
-# В финальный репозиторий не попадает.
+Claude outputs/
 _workbench/
 
 .DS_Store

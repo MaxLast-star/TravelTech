@@ -1,0 +1,257 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="https://www.omg.org/spec/DMN/20191111/MODEL/" xmlns:dmndi="https://www.omg.org/spec/DMN/20191111/DMNDI/" xmlns:dc="http://www.omg.org/spec/DMN/20180521/DC/" xmlns:modeler="http://camunda.org/schema/modeler/1.0" id="Definitions_alternative_ranking" name="Ранжирование альтернатив" namespace="http://travel-irops" exporter="Camunda Modeler" exporterVersion="5.44.0" modeler:executionPlatform="Camunda Cloud" modeler:executionPlatformVersion="8.5.0">
+  <decision id="alternative-ranking" name="Ранжирование альтернатив">
+    <decisionTable id="DT_ar" hitPolicy="FIRST">
+      <input id="In_ar_1" label="Разница во времени прилёта, мин">
+        <inputExpression id="InEx_ar_1" typeRef="number">
+          <text>arrivalDeltaMinutes</text>
+        </inputExpression>
+      </input>
+      <input id="In_ar_2" label="Доплата, ₽">
+        <inputExpression id="InEx_ar_2" typeRef="number">
+          <text>fareDelta</text>
+        </inputExpression>
+      </input>
+      <input id="In_ar_3" label="Число пересадок">
+        <inputExpression id="InEx_ar_3" typeRef="number">
+          <text>stops</text>
+        </inputExpression>
+      </input>
+      <input id="In_ar_4" label="Багажный тариф сохранён">
+        <inputExpression id="InEx_ar_4" typeRef="boolean">
+          <text>baggageKept</text>
+        </inputExpression>
+      </input>
+      <input id="In_ar_5" label="Нужна новая виза">
+        <inputExpression id="InEx_ar_5" typeRef="boolean">
+          <text>visaRequired</text>
+        </inputExpression>
+      </input>
+      <output id="Out_ar_1" label="Балл" name="score" typeRef="number" />
+      <output id="Out_ar_2" label="Допустим" name="eligible" typeRef="boolean" />
+      <rule id="R_ar_1">
+        <description>Новая виза — жёсткое ограничение, вариант отклонён и не показывается (FR-ALT-04, FR-ALT-07)</description>
+        <inputEntry id="InE_ar_1_1">
+          <text>-</text>
+        </inputEntry>
+        <inputEntry id="InE_ar_1_2">
+          <text>-</text>
+        </inputEntry>
+        <inputEntry id="InE_ar_1_3">
+          <text>-</text>
+        </inputEntry>
+        <inputEntry id="InE_ar_1_4">
+          <text>-</text>
+        </inputEntry>
+        <inputEntry id="InE_ar_1_5">
+          <text>true</text>
+        </inputEntry>
+        <outputEntry id="OutE_ar_1_1">
+          <text>0</text>
+        </outputEntry>
+        <outputEntry id="OutE_ar_1_2">
+          <text>false</text>
+        </outputEntry>
+      </rule>
+      <rule id="R_ar_2">
+        <description>Прилёт позже исходного больше чем на 12 ч — вариант не спасает план</description>
+        <inputEntry id="InE_ar_2_1">
+          <text>&gt; 720</text>
+        </inputEntry>
+        <inputEntry id="InE_ar_2_2">
+          <text>-</text>
+        </inputEntry>
+        <inputEntry id="InE_ar_2_3">
+          <text>-</text>
+        </inputEntry>
+        <inputEntry id="InE_ar_2_4">
+          <text>-</text>
+        </inputEntry>
+        <inputEntry id="InE_ar_2_5">
+          <text>-</text>
+        </inputEntry>
+        <outputEntry id="OutE_ar_2_1">
+          <text>0</text>
+        </outputEntry>
+        <outputEntry id="OutE_ar_2_2">
+          <text>false</text>
+        </outputEntry>
+      </rule>
+      <rule id="R_ar_3">
+        <description>Прилёт в пределах 2 ч, без доплаты, не более одной пересадки, багаж сохранён</description>
+        <inputEntry id="InE_ar_3_1">
+          <text>&lt;= 120</text>
+        </inputEntry>
+        <inputEntry id="InE_ar_3_2">
+          <text>&lt;= 0</text>
+        </inputEntry>
+        <inputEntry id="InE_ar_3_3">
+          <text>&lt;= 1</text>
+        </inputEntry>
+        <inputEntry id="InE_ar_3_4">
+          <text>true</text>
+        </inputEntry>
+        <inputEntry id="InE_ar_3_5">
+          <text>false</text>
+        </inputEntry>
+        <outputEntry id="OutE_ar_3_1">
+          <text>100</text>
+        </outputEntry>
+        <outputEntry id="OutE_ar_3_2">
+          <text>true</text>
+        </outputEntry>
+      </rule>
+      <rule id="R_ar_4">
+        <description>То же, но с доплатой в пределах 5 000 ₽</description>
+        <inputEntry id="InE_ar_4_1">
+          <text>&lt;= 120</text>
+        </inputEntry>
+        <inputEntry id="InE_ar_4_2">
+          <text>(0..5000]</text>
+        </inputEntry>
+        <inputEntry id="InE_ar_4_3">
+          <text>&lt;= 1</text>
+        </inputEntry>
+        <inputEntry id="InE_ar_4_4">
+          <text>true</text>
+        </inputEntry>
+        <inputEntry id="InE_ar_4_5">
+          <text>false</text>
+        </inputEntry>
+        <outputEntry id="OutE_ar_4_1">
+          <text>85</text>
+        </outputEntry>
+        <outputEntry id="OutE_ar_4_2">
+          <text>true</text>
+        </outputEntry>
+      </rule>
+      <rule id="R_ar_5">
+        <description>Прилёт в пределах 4 ч, без доплаты, не более двух пересадок, багаж сохранён</description>
+        <inputEntry id="InE_ar_5_1">
+          <text>&lt;= 240</text>
+        </inputEntry>
+        <inputEntry id="InE_ar_5_2">
+          <text>&lt;= 0</text>
+        </inputEntry>
+        <inputEntry id="InE_ar_5_3">
+          <text>&lt;= 2</text>
+        </inputEntry>
+        <inputEntry id="InE_ar_5_4">
+          <text>true</text>
+        </inputEntry>
+        <inputEntry id="InE_ar_5_5">
+          <text>false</text>
+        </inputEntry>
+        <outputEntry id="OutE_ar_5_1">
+          <text>70</text>
+        </outputEntry>
+        <outputEntry id="OutE_ar_5_2">
+          <text>true</text>
+        </outputEntry>
+      </rule>
+      <rule id="R_ar_6">
+        <description>То же, но с доплатой в пределах 15 000 ₽</description>
+        <inputEntry id="InE_ar_6_1">
+          <text>&lt;= 240</text>
+        </inputEntry>
+        <inputEntry id="InE_ar_6_2">
+          <text>(0..15000]</text>
+        </inputEntry>
+        <inputEntry id="InE_ar_6_3">
+          <text>&lt;= 2</text>
+        </inputEntry>
+        <inputEntry id="InE_ar_6_4">
+          <text>true</text>
+        </inputEntry>
+        <inputEntry id="InE_ar_6_5">
+          <text>false</text>
+        </inputEntry>
+        <outputEntry id="OutE_ar_6_1">
+          <text>55</text>
+        </outputEntry>
+        <outputEntry id="OutE_ar_6_2">
+          <text>true</text>
+        </outputEntry>
+      </rule>
+      <rule id="R_ar_7">
+        <description>Прилёт в пределах 8 ч, багаж сохранён</description>
+        <inputEntry id="InE_ar_7_1">
+          <text>&lt;= 480</text>
+        </inputEntry>
+        <inputEntry id="InE_ar_7_2">
+          <text>-</text>
+        </inputEntry>
+        <inputEntry id="InE_ar_7_3">
+          <text>-</text>
+        </inputEntry>
+        <inputEntry id="InE_ar_7_4">
+          <text>true</text>
+        </inputEntry>
+        <inputEntry id="InE_ar_7_5">
+          <text>false</text>
+        </inputEntry>
+        <outputEntry id="OutE_ar_7_1">
+          <text>40</text>
+        </outputEntry>
+        <outputEntry id="OutE_ar_7_2">
+          <text>true</text>
+        </outputEntry>
+      </rule>
+      <rule id="R_ar_8">
+        <description>Прилёт в пределах 8 ч, багажный тариф хуже исходного — годен с условием</description>
+        <inputEntry id="InE_ar_8_1">
+          <text>&lt;= 480</text>
+        </inputEntry>
+        <inputEntry id="InE_ar_8_2">
+          <text>-</text>
+        </inputEntry>
+        <inputEntry id="InE_ar_8_3">
+          <text>-</text>
+        </inputEntry>
+        <inputEntry id="InE_ar_8_4">
+          <text>false</text>
+        </inputEntry>
+        <inputEntry id="InE_ar_8_5">
+          <text>false</text>
+        </inputEntry>
+        <outputEntry id="OutE_ar_8_1">
+          <text>25</text>
+        </outputEntry>
+        <outputEntry id="OutE_ar_8_2">
+          <text>true</text>
+        </outputEntry>
+      </rule>
+      <rule id="R_ar_9">
+        <description>Остальное: допустим, но в конце списка</description>
+        <inputEntry id="InE_ar_9_1">
+          <text>-</text>
+        </inputEntry>
+        <inputEntry id="InE_ar_9_2">
+          <text>-</text>
+        </inputEntry>
+        <inputEntry id="InE_ar_9_3">
+          <text>-</text>
+        </inputEntry>
+        <inputEntry id="InE_ar_9_4">
+          <text>-</text>
+        </inputEntry>
+        <inputEntry id="InE_ar_9_5">
+          <text>-</text>
+        </inputEntry>
+        <outputEntry id="OutE_ar_9_1">
+          <text>10</text>
+        </outputEntry>
+        <outputEntry id="OutE_ar_9_2">
+          <text>true</text>
+        </outputEntry>
+      </rule>
+    </decisionTable>
+  </decision>
+  <dmndi:DMNDI>
+    <dmndi:DMNDiagram id="DMNDiagram_ar">
+      <dmndi:DMNShape id="DMNShape_ar" dmnElementRef="alternative-ranking">
+        <dc:Bounds height="80" width="200" x="160" y="100" />
+      </dmndi:DMNShape>
+    </dmndi:DMNDiagram>
+  </dmndi:DMNDI>
+</definitions>

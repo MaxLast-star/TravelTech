@@ -1,24 +1,452 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
-                  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
-                  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
-                  xmlns:modeler="http://camunda.org/schema/modeler/1.0"
-                  id="Definitions_p03-rebooking"
-                  targetNamespace="http://travel-irops"
-                  exporter="Camunda Modeler" exporterVersion="5.0.0"
-                  modeler:executionPlatform="Camunda Cloud"
-                  modeler:executionPlatformVersion="8.5.0">
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:zeebe="http://camunda.org/schema/zeebe/1.0" xmlns:modeler="http://camunda.org/schema/modeler/1.0" id="Definitions_p03-rebooking" targetNamespace="http://travel-irops" exporter="Camunda Modeler" exporterVersion="5.44.0" modeler:executionPlatform="Camunda Cloud" modeler:executionPlatformVersion="8.5.0">
+  <bpmn:error id="Error_rebooking_failed" name="Перебронирование не выполнено" errorCode="REBOOKING_FAILED" />
+  <bpmn:collaboration id="Collaboration_p03">
+    <bpmn:participant id="Participant_booking_p03" name="Провайдер бронирования" />
+    <bpmn:participant id="Participant_system_p03" name="TravelTech IROPS. Перебронирование" processRef="p03-rebooking" />
+    <bpmn:participant id="Participant_payment_p03" name="Платёжный шлюз" />
+    <bpmn:messageFlow id="MF-03.1" name="Запрос удержания места" sourceRef="P-03.T1" targetRef="Participant_booking_p03" />
+    <bpmn:messageFlow id="MF-03.2" name="Подтверждение холда" sourceRef="Participant_booking_p03" targetRef="P-03.T1" />
+    <bpmn:messageFlow id="MF-03.3" name="Авторизация доплаты" sourceRef="P-03.T2" targetRef="Participant_payment_p03" />
+    <bpmn:messageFlow id="MF-03.4" name="Результат авторизации" sourceRef="Participant_payment_p03" targetRef="P-03.T2" />
+    <bpmn:messageFlow id="MF-03.5" name="Выпуск по PNR, ключ операции" sourceRef="P-03.T4" targetRef="Participant_booking_p03" />
+    <bpmn:messageFlow id="MF-03.6" name="Новый билет" sourceRef="Participant_booking_p03" targetRef="P-03.T4" />
+    <bpmn:messageFlow id="MF-03.7" name="Отмена старого билета" sourceRef="P-03.T5" targetRef="Participant_booking_p03" />
+    <bpmn:messageFlow id="MF-03.8" name="Подтверждение отмены" sourceRef="Participant_booking_p03" targetRef="P-03.T5" />
+    <bpmn:messageFlow id="MF-03.9" name="Возврат разницы" sourceRef="P-03.T6" targetRef="Participant_payment_p03" />
+    <bpmn:messageFlow id="MF-03.10" name="Результат возврата" sourceRef="Participant_payment_p03" targetRef="P-03.T6" />
+  </bpmn:collaboration>
   <bpmn:process id="p03-rebooking" name="P-03 Перебронирование" isExecutable="true">
-    <bpmn:startEvent id="StartEvent_1" name="Заготовка" />
+    <bpmn:startEvent id="P-03.S1" name="Запрошено перебронирование">
+      <bpmn:outgoing>P-03.F1</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:serviceTask id="P-03.T1" name="Захолдировать место на новом рейсе">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="seat-hold" retries="5" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>P-03.F1</bpmn:incoming>
+      <bpmn:outgoing>P-03.F2</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:exclusiveGateway id="P-03.G1" name="Перебронирование вынужденное?" default="P-03.F3">
+      <bpmn:incoming>P-03.F2</bpmn:incoming>
+      <bpmn:outgoing>P-03.F3</bpmn:outgoing>
+      <bpmn:outgoing>P-03.F4</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:serviceTask id="P-03.T2" name="Авторизовать доплату разницы тарифа">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="fare-difference-authorize" retries="3" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>P-03.F3</bpmn:incoming>
+      <bpmn:outgoing>P-03.F5</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:exclusiveGateway id="P-03.G2">
+      <bpmn:incoming>P-03.F4</bpmn:incoming>
+      <bpmn:incoming>P-03.F5</bpmn:incoming>
+      <bpmn:outgoing>P-03.F6</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:serviceTask id="P-03.T3" name="Перенести наземные брони">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="ground-rebook" retries="3" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>P-03.F6</bpmn:incoming>
+      <bpmn:outgoing>P-03.F7</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:serviceTask id="P-03.T4" name="Выпустить билет по PNR">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="ticket-issue" retries="5" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>P-03.F7</bpmn:incoming>
+      <bpmn:outgoing>P-03.F8</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:serviceTask id="P-03.T5" name="Отменить старый билет">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="ticket-void-old" retries="5" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>P-03.F8</bpmn:incoming>
+      <bpmn:outgoing>P-03.F9</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:serviceTask id="P-03.T8" name="Поставить отмену в очередь ретраев">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="void-retry-enqueue" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>P-03.F17</bpmn:incoming>
+      <bpmn:outgoing>P-03.F18</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:exclusiveGateway id="P-03.G4">
+      <bpmn:incoming>P-03.F11</bpmn:incoming>
+      <bpmn:incoming>P-03.F12</bpmn:incoming>
+      <bpmn:outgoing>P-03.F13</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:serviceTask id="P-03.T7" name="Зафиксировать изменение в плане поездки">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="plan-apply" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>P-03.F13</bpmn:incoming>
+      <bpmn:outgoing>P-03.F14</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="P-03.E1" name="Перебронирование выполнено">
+      <bpmn:incoming>P-03.F14</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:serviceTask id="P-03.C3" name="Восстановить наземные брони" isForCompensation="true">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="ground-restore" />
+      </bpmn:extensionElements>
+    </bpmn:serviceTask>
+    <bpmn:serviceTask id="P-03.C2" name="Снять авторизацию доплаты" isForCompensation="true">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="fare-difference-void" />
+      </bpmn:extensionElements>
+    </bpmn:serviceTask>
+    <bpmn:serviceTask id="P-03.C1" name="Снять холд" isForCompensation="true">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="seat-hold-release" />
+      </bpmn:extensionElements>
+    </bpmn:serviceTask>
+    <bpmn:exclusiveGateway id="P-03.G3" name="Разница отрицательная?" default="P-03.F12">
+      <bpmn:incoming>P-03.F9</bpmn:incoming>
+      <bpmn:incoming>P-03.F18</bpmn:incoming>
+      <bpmn:outgoing>P-03.F10</bpmn:outgoing>
+      <bpmn:outgoing>P-03.F12</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:serviceTask id="P-03.T6" name="Оформить возврат разницы">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="fare-difference-refund" retries="3" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>P-03.F10</bpmn:incoming>
+      <bpmn:outgoing>P-03.F11</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:intermediateThrowEvent id="P-03.M1" name="Компенсировать выполненные шаги">
+      <bpmn:incoming>P-03.F15</bpmn:incoming>
+      <bpmn:outgoing>P-03.F16</bpmn:outgoing>
+      <bpmn:compensateEventDefinition id="CED_03_4" />
+    </bpmn:intermediateThrowEvent>
+    <bpmn:endEvent id="P-03.E2" name="Перебронирование не выполнено">
+      <bpmn:incoming>P-03.F16</bpmn:incoming>
+      <bpmn:errorEventDefinition id="EED_03_3" errorRef="Error_rebooking_failed" />
+    </bpmn:endEvent>
+    <bpmn:boundaryEvent id="P-03.B6" name="Старый билет не отменён" attachedToRef="P-03.T5">
+      <bpmn:outgoing>P-03.F17</bpmn:outgoing>
+      <bpmn:errorEventDefinition id="EED_03_2" />
+    </bpmn:boundaryEvent>
+    <bpmn:boundaryEvent id="P-03.B5" name="Выпуск не выполнен" attachedToRef="P-03.T4">
+      <bpmn:outgoing>P-03.F15</bpmn:outgoing>
+      <bpmn:errorEventDefinition id="EED_03_1" />
+    </bpmn:boundaryEvent>
+    <bpmn:boundaryEvent id="P-03.B2" attachedToRef="P-03.T3">
+      <bpmn:compensateEventDefinition id="CED_03_3" />
+    </bpmn:boundaryEvent>
+    <bpmn:boundaryEvent id="P-03.B3" attachedToRef="P-03.T2">
+      <bpmn:compensateEventDefinition id="CED_03_2" />
+    </bpmn:boundaryEvent>
+    <bpmn:boundaryEvent id="P-03.B1" attachedToRef="P-03.T1">
+      <bpmn:compensateEventDefinition id="CED_03_1" />
+    </bpmn:boundaryEvent>
+    <bpmn:sequenceFlow id="P-03.F1" sourceRef="P-03.S1" targetRef="P-03.T1" />
+    <bpmn:sequenceFlow id="P-03.F2" sourceRef="P-03.T1" targetRef="P-03.G1" />
+    <bpmn:sequenceFlow id="P-03.F3" name="Добровольное" sourceRef="P-03.G1" targetRef="P-03.T2" />
+    <bpmn:sequenceFlow id="P-03.F4" name="Вынужденное, тариф сохраняется" sourceRef="P-03.G1" targetRef="P-03.G2">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=involuntary = true</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="P-03.F5" sourceRef="P-03.T2" targetRef="P-03.G2" />
+    <bpmn:sequenceFlow id="P-03.F6" sourceRef="P-03.G2" targetRef="P-03.T3" />
+    <bpmn:sequenceFlow id="P-03.F7" sourceRef="P-03.T3" targetRef="P-03.T4" />
+    <bpmn:sequenceFlow id="P-03.F8" sourceRef="P-03.T4" targetRef="P-03.T5" />
+    <bpmn:sequenceFlow id="P-03.F9" sourceRef="P-03.T5" targetRef="P-03.G3" />
+    <bpmn:sequenceFlow id="P-03.F17" sourceRef="P-03.B6" targetRef="P-03.T8" />
+    <bpmn:sequenceFlow id="P-03.F18" sourceRef="P-03.T8" targetRef="P-03.G3" />
+    <bpmn:sequenceFlow id="P-03.F11" sourceRef="P-03.T6" targetRef="P-03.G4" />
+    <bpmn:sequenceFlow id="P-03.F12" name="Ноль или положительная" sourceRef="P-03.G3" targetRef="P-03.G4" />
+    <bpmn:sequenceFlow id="P-03.F13" sourceRef="P-03.G4" targetRef="P-03.T7" />
+    <bpmn:sequenceFlow id="P-03.F14" sourceRef="P-03.T7" targetRef="P-03.E1" />
+    <bpmn:sequenceFlow id="P-03.F10" name="Отрицательная" sourceRef="P-03.G3" targetRef="P-03.T6">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=fareDelta &lt; 0</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="P-03.F15" sourceRef="P-03.B5" targetRef="P-03.M1" />
+    <bpmn:sequenceFlow id="P-03.F16" sourceRef="P-03.M1" targetRef="P-03.E2" />
+    <bpmn:association id="P-03.A3" associationDirection="One" sourceRef="P-03.B2" targetRef="P-03.C3" />
+    <bpmn:association id="P-03.A2" associationDirection="One" sourceRef="P-03.B3" targetRef="P-03.C2" />
+    <bpmn:association id="P-03.A1" associationDirection="One" sourceRef="P-03.B1" targetRef="P-03.C1" />
   </bpmn:process>
-  <bpmndi:BPMNDiagram id="BPMNDiagram_1">
-    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="p03-rebooking">
-      <bpmndi:BPMNShape id="StartEvent_1_di" bpmnElement="StartEvent_1">
-        <dc:Bounds x="180" y="100" width="36" height="36" />
+  <bpmndi:BPMNDiagram id="BPMNDiagram_p03">
+    <bpmndi:BPMNPlane id="BPMNPlane_p03" bpmnElement="Collaboration_p03">
+      <bpmndi:BPMNShape id="Participant_system_p03_di" bpmnElement="Participant_system_p03" isHorizontal="true">
+        <dc:Bounds x="160" y="200" width="1940" height="670" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-03.S1_di" bpmnElement="P-03.S1">
+        <dc:Bounds x="240" y="462" width="36" height="36" />
         <bpmndi:BPMNLabel>
-          <dc:Bounds x="176" y="143" width="46" height="14" />
+          <dc:Bounds x="215" y="505" width="86" height="40" />
         </bpmndi:BPMNLabel>
       </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-03.T1_di" bpmnElement="P-03.T1">
+        <dc:Bounds x="330" y="440" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-03.G1_di" bpmnElement="P-03.G1" isMarkerVisible="true">
+        <dc:Bounds x="480" y="455" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="461" y="520" width="88" height="40" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-03.T2_di" bpmnElement="P-03.T2">
+        <dc:Bounds x="600" y="440" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-03.G2_di" bpmnElement="P-03.G2" isMarkerVisible="true">
+        <dc:Bounds x="760" y="455" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-03.T3_di" bpmnElement="P-03.T3">
+        <dc:Bounds x="880" y="440" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-03.T4_di" bpmnElement="P-03.T4">
+        <dc:Bounds x="1060" y="440" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-03.T5_di" bpmnElement="P-03.T5">
+        <dc:Bounds x="1240" y="440" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-03.T8_di" bpmnElement="P-03.T8">
+        <dc:Bounds x="1240" y="620" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-03.G4_di" bpmnElement="P-03.G4" isMarkerVisible="true">
+        <dc:Bounds x="1690" y="455" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-03.T7_di" bpmnElement="P-03.T7">
+        <dc:Bounds x="1810" y="440" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-03.E1_di" bpmnElement="P-03.E1">
+        <dc:Bounds x="1980" y="462" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1956" y="505" width="88" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-03.C3_di" bpmnElement="P-03.C3">
+        <dc:Bounds x="880" y="620" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-03.C2_di" bpmnElement="P-03.C2">
+        <dc:Bounds x="530" y="620" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-03.C1_di" bpmnElement="P-03.C1">
+        <dc:Bounds x="330" y="620" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-03.G3_di" bpmnElement="P-03.G3" isMarkerVisible="true">
+        <dc:Bounds x="1435" y="455" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1368" y="426" width="83" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-03.T6_di" bpmnElement="P-03.T6">
+        <dc:Bounds x="1550" y="320" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-03.M1_di" bpmnElement="P-03.M1">
+        <dc:Bounds x="1102" y="732" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1077" y="775" width="86" height="40" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-03.E2_di" bpmnElement="P-03.E2">
+        <dc:Bounds x="1220" y="732" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1196" y="775" width="88" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="P-03.A3_di" bpmnElement="P-03.A3">
+        <di:waypoint x="906" y="537" />
+        <di:waypoint x="906" y="620" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-03.A2_di" bpmnElement="P-03.A2">
+        <di:waypoint x="634" y="537" />
+        <di:waypoint x="634" y="579" />
+        <di:waypoint x="570" y="579" />
+        <di:waypoint x="570" y="620" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-03.A1_di" bpmnElement="P-03.A1">
+        <di:waypoint x="356" y="537" />
+        <di:waypoint x="356" y="620" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="P-03.B6_di" bpmnElement="P-03.B6">
+        <dc:Bounds x="1282" y="502" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1196" y="536" width="88" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-03.B5_di" bpmnElement="P-03.B5">
+        <dc:Bounds x="1102" y="502" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1019" y="560" width="53" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-03.B2_di" bpmnElement="P-03.B2">
+        <dc:Bounds x="892" y="502" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-03.B3_di" bpmnElement="P-03.B3">
+        <dc:Bounds x="612" y="502" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-03.B1_di" bpmnElement="P-03.B1">
+        <dc:Bounds x="342" y="502" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="P-03.F1_di" bpmnElement="P-03.F1">
+        <di:waypoint x="276" y="480" />
+        <di:waypoint x="330" y="480" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-03.F2_di" bpmnElement="P-03.F2">
+        <di:waypoint x="430" y="480" />
+        <di:waypoint x="480" y="480" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-03.F3_di" bpmnElement="P-03.F3">
+        <di:waypoint x="530" y="480" />
+        <di:waypoint x="600" y="480" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="527" y="456" width="74" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-03.F4_di" bpmnElement="P-03.F4">
+        <di:waypoint x="505" y="455" />
+        <di:waypoint x="505" y="390" />
+        <di:waypoint x="785" y="390" />
+        <di:waypoint x="785" y="455" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="598" y="340" width="75" height="40" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-03.F5_di" bpmnElement="P-03.F5">
+        <di:waypoint x="700" y="480" />
+        <di:waypoint x="760" y="480" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-03.F6_di" bpmnElement="P-03.F6">
+        <di:waypoint x="810" y="480" />
+        <di:waypoint x="880" y="480" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-03.F7_di" bpmnElement="P-03.F7">
+        <di:waypoint x="980" y="480" />
+        <di:waypoint x="1060" y="480" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-03.F8_di" bpmnElement="P-03.F8">
+        <di:waypoint x="1160" y="480" />
+        <di:waypoint x="1240" y="480" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-03.F9_di" bpmnElement="P-03.F9">
+        <di:waypoint x="1340" y="480" />
+        <di:waypoint x="1435" y="480" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-03.F10_di" bpmnElement="P-03.F10">
+        <di:waypoint x="1460" y="455" />
+        <di:waypoint x="1460" y="360" />
+        <di:waypoint x="1550" y="360" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1480" y="413" width="79" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-03.F11_di" bpmnElement="P-03.F11">
+        <di:waypoint x="1650" y="360" />
+        <di:waypoint x="1715" y="360" />
+        <di:waypoint x="1715" y="455" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-03.F12_di" bpmnElement="P-03.F12">
+        <di:waypoint x="1485" y="480" />
+        <di:waypoint x="1690" y="480" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1480" y="496" width="79" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-03.F13_di" bpmnElement="P-03.F13">
+        <di:waypoint x="1740" y="480" />
+        <di:waypoint x="1810" y="480" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-03.F14_di" bpmnElement="P-03.F14">
+        <di:waypoint x="1910" y="480" />
+        <di:waypoint x="1980" y="480" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-03.F15_di" bpmnElement="P-03.F15">
+        <di:waypoint x="1120" y="538" />
+        <di:waypoint x="1120" y="732" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-03.F17_di" bpmnElement="P-03.F17">
+        <di:waypoint x="1300" y="538" />
+        <di:waypoint x="1300" y="620" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-03.F18_di" bpmnElement="P-03.F18">
+        <di:waypoint x="1340" y="660" />
+        <di:waypoint x="1460" y="660" />
+        <di:waypoint x="1460" y="505" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-03.F16_di" bpmnElement="P-03.F16">
+        <di:waypoint x="1138" y="750" />
+        <di:waypoint x="1220" y="750" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="Participant_payment_p03_di" bpmnElement="Participant_payment_p03" isHorizontal="true">
+        <dc:Bounds x="560" y="910" width="1080" height="60" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Participant_booking_p03_di" bpmnElement="Participant_booking_p03" isHorizontal="true">
+        <dc:Bounds x="160" y="80" width="1400" height="60" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="MF-03.1_di" bpmnElement="MF-03.1">
+        <di:waypoint x="350" y="440" />
+        <di:waypoint x="350" y="140" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="246" y="329" width="89" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="MF-03.2_di" bpmnElement="MF-03.2">
+        <di:waypoint x="400" y="140" />
+        <di:waypoint x="400" y="440" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="419" y="329" width="82" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="MF-03.3_di" bpmnElement="MF-03.3">
+        <di:waypoint x="665" y="520" />
+        <di:waypoint x="665" y="910" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="587" y="766" width="65" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="MF-03.4_di" bpmnElement="MF-03.4">
+        <di:waypoint x="690" y="910" />
+        <di:waypoint x="690" y="520" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="717" y="766" width="66" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="MF-03.5_di" bpmnElement="MF-03.5">
+        <di:waypoint x="1080" y="440" />
+        <di:waypoint x="1080" y="140" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="989" y="329" width="82" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="MF-03.6_di" bpmnElement="MF-03.6">
+        <di:waypoint x="1130" y="140" />
+        <di:waypoint x="1130" y="440" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1146" y="336" width="68" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="MF-03.7_di" bpmnElement="MF-03.7">
+        <di:waypoint x="1260" y="440" />
+        <di:waypoint x="1260" y="140" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1159" y="291" width="82" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="MF-03.8_di" bpmnElement="MF-03.8">
+        <di:waypoint x="1310" y="140" />
+        <di:waypoint x="1310" y="440" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1329" y="291" width="82" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="MF-03.9_di" bpmnElement="MF-03.9">
+        <di:waypoint x="1570" y="400" />
+        <di:waypoint x="1570" y="910" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1456" y="788" width="88" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="MF-03.10_di" bpmnElement="MF-03.10">
+        <di:waypoint x="1610" y="910" />
+        <di:waypoint x="1610" y="400" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1645" y="786" width="51" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
     </bpmndi:BPMNPlane>
   </bpmndi:BPMNDiagram>
 </bpmn:definitions>

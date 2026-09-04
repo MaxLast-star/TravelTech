@@ -1,24 +1,263 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
-                  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
-                  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
-                  xmlns:modeler="http://camunda.org/schema/modeler/1.0"
-                  id="Definitions_p04-pii-purge"
-                  targetNamespace="http://travel-irops"
-                  exporter="Camunda Modeler" exporterVersion="5.0.0"
-                  modeler:executionPlatform="Camunda Cloud"
-                  modeler:executionPlatformVersion="8.5.0">
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" xmlns:di="http://www.omg.org/spec/DD/20100524/DI" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:zeebe="http://camunda.org/schema/zeebe/1.0" xmlns:modeler="http://camunda.org/schema/modeler/1.0" id="Definitions_p04-pii-purge" targetNamespace="http://travel-irops" exporter="Camunda Modeler" exporterVersion="5.44.0" modeler:executionPlatform="Camunda Cloud" modeler:executionPlatformVersion="8.5.0">
+  <bpmn:message id="Message_trip_completed" name="trip.completed.v1">
+    <bpmn:extensionElements>
+      <zeebe:subscription correlationKey="=tripId" />
+    </bpmn:extensionElements>
+  </bpmn:message>
+  <bpmn:message id="Message_pii_mismatch" name="pii.purge.mismatch.v1" />
+  <bpmn:collaboration id="Collaboration_p04">
+    <bpmn:participant id="Participant_plan_p04" name="Сервис плана поездки" />
+    <bpmn:participant id="Participant_obs_p04" name="Мониторинг и алерты" />
+    <bpmn:participant id="Participant_system_p04" name="TravelTech IROPS. Удержание и удаление паспортных данных" processRef="p04-pii-purge" />
+    <bpmn:messageFlow id="MF-04.1" name="trip.completed.v1" sourceRef="Participant_plan_p04" targetRef="P-04.S1" />
+    <bpmn:messageFlow id="MF-04.2" name="pii.purge.mismatch.v1" sourceRef="P-04.M1" targetRef="Participant_obs_p04" />
+  </bpmn:collaboration>
   <bpmn:process id="p04-pii-purge" name="P-04 Удаление паспортных данных" isExecutable="true">
-    <bpmn:startEvent id="StartEvent_1" name="Заготовка" />
+    <bpmn:startEvent id="P-04.S1" name="Поездка завершена">
+      <bpmn:outgoing>P-04.F1</bpmn:outgoing>
+      <bpmn:messageEventDefinition id="MED_04_1" messageRef="Message_trip_completed" />
+    </bpmn:startEvent>
+    <bpmn:serviceTask id="P-04.T1" name="Рассчитать срок удержания">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="pii-retention-calc" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>P-04.F1</bpmn:incoming>
+      <bpmn:outgoing>P-04.F2</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:exclusiveGateway id="P-04.G0">
+      <bpmn:incoming>P-04.F2</bpmn:incoming>
+      <bpmn:incoming>P-04.F7</bpmn:incoming>
+      <bpmn:outgoing>P-04.F3</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:intermediateCatchEvent id="P-04.I1" name="Ждать срок удержания">
+      <bpmn:incoming>P-04.F3</bpmn:incoming>
+      <bpmn:outgoing>P-04.F4</bpmn:outgoing>
+      <bpmn:timerEventDefinition id="TED_04_1">
+        <bpmn:timeDate xsi:type="bpmn:tFormalExpression">=retentionDueAt</bpmn:timeDate>
+      </bpmn:timerEventDefinition>
+    </bpmn:intermediateCatchEvent>
+    <bpmn:serviceTask id="P-04.T2" name="Проверить отсутствие активных броней">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="active-booking-check" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>P-04.F4</bpmn:incoming>
+      <bpmn:outgoing>P-04.F5</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:exclusiveGateway id="P-04.G1" name="Есть активные брони?" default="P-04.F8">
+      <bpmn:incoming>P-04.F5</bpmn:incoming>
+      <bpmn:outgoing>P-04.F6</bpmn:outgoing>
+      <bpmn:outgoing>P-04.F8</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:serviceTask id="P-04.T3" name="Перенести срок удержания">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="pii-retention-postpone" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>P-04.F6</bpmn:incoming>
+      <bpmn:outgoing>P-04.F7</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:serviceTask id="P-04.T4" name="Удалить паспортные данные физически">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="pii-hard-delete" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>P-04.F8</bpmn:incoming>
+      <bpmn:outgoing>P-04.F9</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:serviceTask id="P-04.T5" name="Записать удаление в журнал аудита">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="pii-audit-append" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>P-04.F9</bpmn:incoming>
+      <bpmn:outgoing>P-04.F10</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:exclusiveGateway id="P-04.G2" name="Удаление подтверждено?" default="P-04.F12">
+      <bpmn:incoming>P-04.F10</bpmn:incoming>
+      <bpmn:outgoing>P-04.F11</bpmn:outgoing>
+      <bpmn:outgoing>P-04.F12</bpmn:outgoing>
+    </bpmn:exclusiveGateway>
+    <bpmn:endEvent id="P-04.E1" name="Паспортные данные удалены">
+      <bpmn:incoming>P-04.F11</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:intermediateThrowEvent id="P-04.M1" name="Поднять алерт о расхождении">
+      <bpmn:extensionElements>
+        <zeebe:taskDefinition type="observability-alert" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>P-04.F12</bpmn:incoming>
+      <bpmn:outgoing>P-04.F13</bpmn:outgoing>
+      <bpmn:messageEventDefinition id="MED_04_2" messageRef="Message_pii_mismatch" />
+    </bpmn:intermediateThrowEvent>
+    <bpmn:endEvent id="P-04.E2" name="Расхождение зафиксировано">
+      <bpmn:incoming>P-04.F13</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="P-04.F1" sourceRef="P-04.S1" targetRef="P-04.T1" />
+    <bpmn:sequenceFlow id="P-04.F2" sourceRef="P-04.T1" targetRef="P-04.G0" />
+    <bpmn:sequenceFlow id="P-04.F7" sourceRef="P-04.T3" targetRef="P-04.G0" />
+    <bpmn:sequenceFlow id="P-04.F3" sourceRef="P-04.G0" targetRef="P-04.I1" />
+    <bpmn:sequenceFlow id="P-04.F4" sourceRef="P-04.I1" targetRef="P-04.T2" />
+    <bpmn:sequenceFlow id="P-04.F5" sourceRef="P-04.T2" targetRef="P-04.G1" />
+    <bpmn:sequenceFlow id="P-04.F6" name="Есть активные" sourceRef="P-04.G1" targetRef="P-04.T3">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=activeBookings &gt; 0</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="P-04.F8" name="Активных нет" sourceRef="P-04.G1" targetRef="P-04.T4" />
+    <bpmn:sequenceFlow id="P-04.F9" sourceRef="P-04.T4" targetRef="P-04.T5" />
+    <bpmn:sequenceFlow id="P-04.F10" sourceRef="P-04.T5" targetRef="P-04.G2" />
+    <bpmn:sequenceFlow id="P-04.F11" name="Подтверждено" sourceRef="P-04.G2" targetRef="P-04.E1">
+      <bpmn:conditionExpression xsi:type="bpmn:tFormalExpression">=purgeVerified = true</bpmn:conditionExpression>
+    </bpmn:sequenceFlow>
+    <bpmn:sequenceFlow id="P-04.F12" name="Запись с истёкшим TTL осталась" sourceRef="P-04.G2" targetRef="P-04.M1" />
+    <bpmn:sequenceFlow id="P-04.F13" sourceRef="P-04.M1" targetRef="P-04.E2" />
   </bpmn:process>
-  <bpmndi:BPMNDiagram id="BPMNDiagram_1">
-    <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="p04-pii-purge">
-      <bpmndi:BPMNShape id="StartEvent_1_di" bpmnElement="StartEvent_1">
-        <dc:Bounds x="180" y="100" width="36" height="36" />
+  <bpmndi:BPMNDiagram id="BPMNDiagram_p04">
+    <bpmndi:BPMNPlane id="BPMNPlane_p04" bpmnElement="Collaboration_p04">
+      <bpmndi:BPMNShape id="Participant_system_p04_di" bpmnElement="Participant_system_p04" isHorizontal="true">
+        <dc:Bounds x="160" y="200" width="1530" height="440" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-04.S1_di" bpmnElement="P-04.S1">
+        <dc:Bounds x="240" y="472" width="36" height="36" />
         <bpmndi:BPMNLabel>
-          <dc:Bounds x="176" y="143" width="46" height="14" />
+          <dc:Bounds x="230" y="515" width="57" height="27" />
         </bpmndi:BPMNLabel>
       </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-04.T1_di" bpmnElement="P-04.T1">
+        <dc:Bounds x="330" y="450" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-04.G0_di" bpmnElement="P-04.G0" isMarkerVisible="true">
+        <dc:Bounds x="470" y="465" width="50" height="50" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-04.I1_di" bpmnElement="P-04.I1">
+        <dc:Bounds x="570" y="472" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="561" y="420" width="59" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-04.T2_di" bpmnElement="P-04.T2">
+        <dc:Bounds x="670" y="450" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-04.G1_di" bpmnElement="P-04.G1" isMarkerVisible="true">
+        <dc:Bounds x="830" y="465" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="817" y="524.5" width="75" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-04.T3_di" bpmnElement="P-04.T3">
+        <dc:Bounds x="670" y="310" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-04.T4_di" bpmnElement="P-04.T4">
+        <dc:Bounds x="970" y="450" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-04.T5_di" bpmnElement="P-04.T5">
+        <dc:Bounds x="1130" y="450" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-04.G2_di" bpmnElement="P-04.G2" isMarkerVisible="true">
+        <dc:Bounds x="1312" y="465" width="50" height="50" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1297" y="524.5" width="80" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-04.E1_di" bpmnElement="P-04.E1">
+        <dc:Bounds x="1472" y="472" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1448" y="515" width="86" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-04.M1_di" bpmnElement="P-04.M1">
+        <dc:Bounds x="1319" y="332" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1223" y="336.5" width="86" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="P-04.E2_di" bpmnElement="P-04.E2">
+        <dc:Bounds x="1472" y="332" width="36" height="36" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1451" y="375" width="80" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="P-04.F1_di" bpmnElement="P-04.F1">
+        <di:waypoint x="276" y="490" />
+        <di:waypoint x="330" y="490" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-04.F2_di" bpmnElement="P-04.F2">
+        <di:waypoint x="430" y="490" />
+        <di:waypoint x="470" y="490" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-04.F3_di" bpmnElement="P-04.F3">
+        <di:waypoint x="520" y="490" />
+        <di:waypoint x="570" y="490" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-04.F4_di" bpmnElement="P-04.F4">
+        <di:waypoint x="606" y="490" />
+        <di:waypoint x="670" y="490" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-04.F5_di" bpmnElement="P-04.F5">
+        <di:waypoint x="770" y="490" />
+        <di:waypoint x="830" y="490" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-04.F6_di" bpmnElement="P-04.F6">
+        <di:waypoint x="855" y="465" />
+        <di:waypoint x="855" y="350" />
+        <di:waypoint x="770" y="350" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="769" y="417" width="75" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-04.F7_di" bpmnElement="P-04.F7">
+        <di:waypoint x="670" y="350" />
+        <di:waypoint x="495" y="350" />
+        <di:waypoint x="495" y="465" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-04.F8_di" bpmnElement="P-04.F8">
+        <di:waypoint x="880" y="490" />
+        <di:waypoint x="970" y="490" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="891" y="466" width="69" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-04.F9_di" bpmnElement="P-04.F9">
+        <di:waypoint x="1070" y="490" />
+        <di:waypoint x="1130" y="490" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-04.F10_di" bpmnElement="P-04.F10">
+        <di:waypoint x="1230" y="490" />
+        <di:waypoint x="1312" y="490" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-04.F11_di" bpmnElement="P-04.F11">
+        <di:waypoint x="1362" y="490" />
+        <di:waypoint x="1472" y="490" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1370" y="466" width="76" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-04.F12_di" bpmnElement="P-04.F12">
+        <di:waypoint x="1337" y="465" />
+        <di:waypoint x="1337" y="368" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1253" y="404" width="74" height="40" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="P-04.F13_di" bpmnElement="P-04.F13">
+        <di:waypoint x="1355" y="350" />
+        <di:waypoint x="1472" y="350" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNShape id="Participant_plan_p04_di" bpmnElement="Participant_plan_p04" isHorizontal="true">
+        <dc:Bounds x="160" y="80" width="740" height="60" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Participant_obs_p04_di" bpmnElement="Participant_obs_p04" isHorizontal="true">
+        <dc:Bounds x="930" y="80" width="770" height="60" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="MF-04.1_di" bpmnElement="MF-04.1">
+        <di:waypoint x="258" y="140" />
+        <di:waypoint x="258" y="472" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="282" y="263" width="83" height="14" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="MF-04.2_di" bpmnElement="MF-04.2">
+        <di:waypoint x="1337" y="332" />
+        <di:waypoint x="1337" y="140" />
+        <bpmndi:BPMNLabel>
+          <dc:Bounds x="1364" y="256" width="88" height="27" />
+        </bpmndi:BPMNLabel>
+      </bpmndi:BPMNEdge>
     </bpmndi:BPMNPlane>
   </bpmndi:BPMNDiagram>
 </bpmn:definitions>

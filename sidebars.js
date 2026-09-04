@@ -32,7 +32,6 @@ const sidebars = {
         'processes/p02-alternatives',
         'processes/p03-rebooking',
         'processes/p04-pii-purge',
-        'processes/p05-booking',
         'processes/dmn',
       ],
     },
