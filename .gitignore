@@ -9,6 +9,9 @@ _workbench/
 Thumbs.db
 *.bpmn.bak
 
+# автосейвы draw.io: .$<имя>.drawio.bkp. Обычные *.bkp не игнорируются
+.$*.bkp
+
 .env.local
 .env.development.local
 .env.test.local
