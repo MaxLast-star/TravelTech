@@ -230,7 +230,7 @@ Table trip.auto_policy {
   trip_id uuid [note: 'Заполнено при scope = trip']
   booking_id uuid [note: 'Заполнено при scope = booking']
   strategy trip.auto_policy_strategy [not null]
-  max_surcharge_minor bigint [not null, default: 0, note: 'Порог доплаты. 0 означает: вариант с доплатой авто-политикой не выбирается']
+  max_surcharge_minor bigint [not null, default: 0, note: 'Порог доплаты, FR-DEC-03. Авто-политика выбирает вариант с положительной разницей тарифа, только если payer_consent_at заполнен И разница не превышает этот порог. 0 — частный случай порога, при котором отсекается любой вариант с доплатой, а не отдельный флаг. Отрицательная разница порогом не ограничена: это возврат']
   currency char(3) [not null]
   payer_consent_at timestamptz [note: 'Время согласия плательщика на доплату в пределах порога. NULL — согласия нет, FR-DEC-03 запрещает выбор варианта с доплатой']
   created_by_participation_id uuid [not null]
