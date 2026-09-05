@@ -1,1 +1,900 @@
-// Черновик. Заполняется на шаге 05.
+// TravelTech IROPS — модель данных
+// Источник правды для ERD. Страница docs/data/erd.md рисует те же таблицы
+// через mermaid erDiagram. Файл открывается в dbdiagram.io без изменений.
+//
+// Правила, общие для всей модели:
+//   1. Все моменты времени — timestamptz в UTC. Локальное время не хранится,
+//      оно вычисляется через таймзону точки в формате IANA.
+//   2. Статусы рейсов добавляются, а не обновляются.
+//   3. Паспортные данные лежат в отдельном инстансе и удаляются физически.
+//   4. У каждой схемы ровно один сервис-писатель. Связи между схемами —
+//      логические, внешним ключом не подкреплены: их целостность обеспечивает
+//      владелец схемы, а не СУБД. В DBML такие связи не объявлены как Ref,
+//      колонка помечена примечанием.
+
+Project traveltech_irops {
+  database_type: 'PostgreSQL'
+  Note: 'Модель данных сервиса отслеживания сбоев рейсов и перебронирования. Шесть схем: trip, status, disruption, alternative, notification в основном хранилище C-DB и pii в отдельном инстансе C-VAULT.'
+}
+
+// ============================================================================
+// Схема trip — поездка, участники, бронирования, план
+// Писатель: C-PLAN
+// ============================================================================
+
+Enum trip.trip_state {
+  planned
+  active
+  completed
+  cancelled
+}
+
+Enum trip.participation_role {
+  organizer
+  participant
+}
+
+Enum trip.booking_state {
+  issued
+  reissued
+  cancelled
+  refunded
+}
+
+Enum trip.segment_state {
+  planned
+  replaced
+  cancelled
+  flown
+}
+
+Enum trip.plan_item_kind {
+  segment
+  transfer
+  hotel_stay
+  activity
+}
+
+Enum trip.plan_item_state {
+  ok
+  needs_attention
+  rescheduled
+  cancelled
+}
+
+Enum trip.policy_scope {
+  trip
+  booking
+}
+
+Enum trip.auto_policy_strategy {
+  earliest_arrival
+  keep_plan
+  same_carrier
+  no_auto
+}
+
+Table trip.traveller {
+  traveller_id uuid [pk]
+  external_user_id text [not null, unique, note: 'Идентификатор в системе учётных записей']
+  display_name text [not null]
+  email text
+  phone_e164 text
+  citizenship_country char(2) [not null, note: 'ISO 3166-1 alpha-2. Гражданство для проверки транзитной визы FR-ALT-04. Атрибут человека, а не документа: живёт вне контура ПДн и сроком удержания не ограничен']
+  home_timezone text [not null, note: 'IANA, например Europe/Moscow. Таймзона по умолчанию для отображения']
+  created_at timestamptz [not null]
+
+  Note: 'Путешественник. Паспортных полей не содержит: они в схеме pii, ссылка на них хранится на бронировании'
+}
+
+Table trip.trip {
+  trip_id uuid [pk]
+  title text [not null]
+  state trip.trip_state [not null]
+  starts_at_utc timestamptz [not null]
+  ends_at_utc timestamptz [not null]
+  completed_at_utc timestamptz [note: 'Заполняется при публикации trip.completed.v1. Точка отсчёта срока удержания паспортных данных']
+  current_plan_version int [not null, default: 1]
+  created_at timestamptz [not null]
+  updated_at timestamptz [not null]
+
+  Note: 'Поездка. Поездка с одним участником — частный случай, а не отдельный тип'
+}
+
+Table trip.trip_participation {
+  participation_id uuid [pk]
+  trip_id uuid [not null]
+  traveller_id uuid [not null]
+  role trip.participation_role [not null]
+  joined_at timestamptz [not null]
+  left_at timestamptz
+
+  indexes {
+    (trip_id, traveller_id) [unique]
+    trip_id
+  }
+
+  Note: 'Участие в поездке. Носитель роли: FR-GRP-01 требует, чтобы роль хранилась на связи, а не на путешественнике. Один человек — организатор в одной поездке и участник в другой'
+}
+
+Table trip.organizer_mandate {
+  mandate_id uuid [pk]
+  trip_id uuid [not null]
+  granted_by_participation_id uuid [not null, note: 'Участник, выдавший мандат']
+  granted_to_participation_id uuid [not null, note: 'Организатор']
+  granted_at timestamptz [not null]
+  revoked_at timestamptz [note: 'NULL — мандат действует']
+
+  indexes {
+    (granted_to_participation_id, granted_at)
+  }
+
+  Note: 'Мандат организатора. Интервал, а не флаг: FR-GRP-02 проверяет действие мандата на момент выбора альтернативы, а выбор мог произойти до отзыва'
+}
+
+Table trip.booking {
+  booking_id uuid [pk]
+  trip_id uuid [not null]
+  participation_id uuid [not null, note: 'Бронирование принадлежит одному участию: перевозка одного путешественника']
+  pnr text [not null, note: 'Запись бронирования у перевозчика или GDS']
+  provider_code text [not null]
+  state trip.booking_state [not null]
+  fare_basis text [not null]
+  fare_amount_minor bigint [not null, note: 'В минорных единицах валюты']
+  currency char(3) [not null]
+  baggage_pieces int [not null, note: 'Багажный тариф: число мест. Сравнивается с нормой альтернативы, FR-ALT-03']
+  baggage_weight_kg int
+  is_refundable bool [not null]
+  pii_document_ref uuid [note: 'Ссылка на pii.travel_document. Логическая, без внешнего ключа: другой инстанс. Содержимого документа здесь нет']
+  created_at timestamptz [not null]
+  updated_at timestamptz [not null]
+
+  indexes {
+    trip_id
+    (provider_code, pnr) [unique]
+  }
+
+  Note: 'Бронирование. Единица, к которой привязаны сбой, решение и перебронирование. Ключ партиционирования disruption.detected.v1'
+}
+
+Table trip.segment {
+  segment_id uuid [pk]
+  booking_id uuid [not null]
+  sequence_no int [not null, note: 'Порядок сегмента в бронировании. Стыковка — пара соседних по этому номеру']
+  flight_key text [not null, note: 'Перевозчик, номер рейса и дата вылета в UTC. Тот же ключ партиционирует flight.status.received.v1 и связывает сегмент со схемой status']
+  marketing_carrier char(2) [not null]
+  flight_number text [not null]
+  departure_airport char(3) [not null, note: 'IATA. Таймзона берётся из status.airport']
+  arrival_airport char(3) [not null]
+  scheduled_departure_utc timestamptz [not null]
+  scheduled_arrival_utc timestamptz [not null]
+  departure_terminal text
+  arrival_terminal text
+  cabin text [not null]
+  state trip.segment_state [not null]
+  replaced_by_segment_id uuid [note: 'Заполняется при перебронировании. Старый сегмент не удаляется']
+
+  indexes {
+    booking_id
+    flight_key
+    (booking_id, sequence_no) [unique]
+  }
+
+  Note: 'Сегмент — один перелёт одним рейсом. Минимальная единица, по которой приходит статус. Плановые времена в UTC, локальные вычисляются через таймзону аэропорта'
+}
+
+Table trip.plan_version {
+  plan_version_id uuid [pk]
+  trip_id uuid [not null]
+  version_no int [not null, note: 'Монотонно возрастает. FR-PLN-01, порядок значим, поэтому plan.updated.v1 партиционируется по trip_id']
+  created_at timestamptz [not null]
+  caused_by_disruption_id uuid [note: 'Сбой, изменивший план. Логическая ссылка на disruption.disruption, без внешнего ключа']
+  change_summary text [not null]
+
+  indexes {
+    (trip_id, version_no) [unique]
+  }
+
+  Note: 'Версия плана поездки. Предыдущая версия сохраняется с указанием сбоя, который её изменил'
+}
+
+Table trip.plan_item {
+  plan_item_id uuid [pk]
+  trip_id uuid [not null]
+  kind trip.plan_item_kind [not null]
+  segment_id uuid [note: 'Заполнено при kind = segment. Времена перелёта не дублируются, читаются из trip.segment']
+  supplier_code text [note: 'Поставщик наземной услуги']
+  external_ref text [note: 'Идентификатор брони у поставщика']
+  title text [not null]
+  starts_at_utc timestamptz [note: 'NULL при kind = segment']
+  ends_at_utc timestamptz
+  timezone text [not null, note: 'IANA-таймзона точки события. Без неё локальное время элемента невосстановимо']
+  location_code text
+  is_refundable bool [not null, note: 'Невозвратный элемент не отменяется автоматически, FR-PLN-03']
+  cancellation_deadline_utc timestamptz
+  state trip.plan_item_state [not null, note: 'needs_attention — поставщик не подтвердил отмену или перенос, FR-PLN-02']
+  valid_from_version int [not null]
+  valid_to_version int [note: 'NULL — элемент в текущей версии плана']
+
+  indexes {
+    (trip_id, valid_from_version)
+    segment_id
+  }
+
+  Note: 'Элемент плана поездки: сегмент, трансфер, заезд в отель, активность. Версионируется интервалом версий, а не копированием всего плана'
+}
+
+Table trip.auto_policy {
+  auto_policy_id uuid [pk]
+  scope trip.policy_scope [not null]
+  trip_id uuid [note: 'Заполнено при scope = trip']
+  booking_id uuid [note: 'Заполнено при scope = booking']
+  strategy trip.auto_policy_strategy [not null]
+  max_surcharge_minor bigint [not null, default: 0, note: 'Порог доплаты. 0 означает: вариант с доплатой авто-политикой не выбирается']
+  currency char(3) [not null]
+  payer_consent_at timestamptz [note: 'Время согласия плательщика на доплату в пределах порога. NULL — согласия нет, FR-DEC-03 запрещает выбор варианта с доплатой']
+  created_by_participation_id uuid [not null]
+  updated_at timestamptz [not null]
+
+  indexes {
+    trip_id [unique]
+    booking_id [unique]
+  }
+
+  Note: 'Авто-политика. Приоритет политики бронирования над политикой поездки — порядок выборки, а не поле: сначала ищется строка со scope = booking'
+}
+
+Table trip.outbox_event {
+  outbox_id bigint [pk, increment]
+  aggregate_type text [not null]
+  aggregate_id uuid [not null]
+  event_type text [not null, note: 'plan.updated.v1, trip.completed.v1']
+  partition_key text [not null, note: 'trip_id для обоих событий схемы']
+  payload jsonb [not null]
+  occurred_at timestamptz [not null]
+  published_at timestamptz [note: 'NULL — релей ещё не отправил']
+
+  indexes {
+    published_at
+  }
+
+  Note: 'Транзакционный outbox C-PLAN. Событие пишется той же транзакцией, что и изменение состояния. Та же структура существует в схеме disruption у C-ORCH: общая таблица означала бы двух писателей'
+}
+
+Ref: trip.trip_participation.trip_id > trip.trip.trip_id
+Ref: trip.trip_participation.traveller_id > trip.traveller.traveller_id
+Ref: trip.organizer_mandate.trip_id > trip.trip.trip_id
+Ref: trip.organizer_mandate.granted_by_participation_id > trip.trip_participation.participation_id
+Ref: trip.organizer_mandate.granted_to_participation_id > trip.trip_participation.participation_id
+Ref: trip.booking.trip_id > trip.trip.trip_id
+Ref: trip.booking.participation_id > trip.trip_participation.participation_id
+Ref: trip.segment.booking_id > trip.booking.booking_id
+Ref: trip.segment.replaced_by_segment_id - trip.segment.segment_id
+Ref: trip.plan_version.trip_id > trip.trip.trip_id
+Ref: trip.plan_item.trip_id > trip.trip.trip_id
+Ref: trip.plan_item.segment_id - trip.segment.segment_id
+Ref: trip.auto_policy.trip_id - trip.trip.trip_id
+Ref: trip.auto_policy.booking_id - trip.booking.booking_id
+Ref: trip.auto_policy.created_by_participation_id > trip.trip_participation.participation_id
+
+// ============================================================================
+// Схема status — источники, аэропорты, MCT, поток статусов, состояние рейса
+// Писатель: C-DETECT
+// ============================================================================
+
+Enum status.source_kind {
+  aggregator
+  carrier_push
+  mailing
+}
+
+Enum status.flight_status_kind {
+  on_time
+  delayed
+  cancelled
+  retimed
+  airport_changed
+  informational
+}
+
+Enum status.connection_kind {
+  domestic
+  international
+  mixed
+}
+
+Enum status.freshness_state {
+  fresh
+  stale
+}
+
+Table status.status_source {
+  source_id uuid [pk]
+  code text [not null, unique]
+  name text [not null]
+  kind status.source_kind [not null]
+  trust_rank int [not null, note: 'Ранг достоверности. При противоречии побеждает больший, при равном — более позднее event_at. FR-ING-03']
+  poll_interval_sec int [note: 'NULL у push-источников. Участвует в расчёте порога свежести NFR-REL-04']
+  is_active bool [not null, default: true]
+
+  Note: 'Источник статусов. Новый источник — новая строка и новый адаптер в C-INGEST, домен детекции не меняется. NFR-SCAL-03'
+}
+
+Table status.airport {
+  iata_code char(3) [pk]
+  name text [not null]
+  country char(2) [not null]
+  timezone text [not null, note: 'IANA, например Europe/Moscow. Не смещение: смещение меняется дважды в год']
+
+  Note: 'Аэропорт. Единственный источник локального времени в системе: все моменты хранятся в UTC и переводятся через эту таймзону'
+}
+
+Table status.mct_rule {
+  mct_rule_id uuid [pk]
+  airport_code char(3) [not null]
+  arrival_terminal text [note: 'NULL — правило для любого терминала прилёта']
+  departure_terminal text
+  connection_kind status.connection_kind [not null]
+  min_minutes int [not null]
+  valid_from timestamptz [not null]
+  fetched_at timestamptz [not null, note: 'Когда правило снято со справочника ограничений. Справочник внешний, здесь его снимок']
+
+  indexes {
+    (airport_code, connection_kind, valid_from)
+  }
+
+  Note: 'Минимальное время пересадки. Система MCT не вычисляет, а хранит значение справочника. Значение, применённое при детекции конкретного сбоя, дублируется в disruption.disruption_impact: справочник меняется, а разбор идёт по действовавшему правилу'
+}
+
+Table status.flight {
+  flight_key text [pk, note: 'Перевозчик, номер рейса и дата вылета в UTC. Ключ партиционирования flight.status.received.v1 и связь с trip.segment']
+  marketing_carrier char(2) [not null]
+  flight_number text [not null]
+  departure_airport char(3) [not null]
+  arrival_airport char(3) [not null]
+  scheduled_departure_utc timestamptz [not null]
+  scheduled_arrival_utc timestamptz [not null]
+  first_seen_at timestamptz [not null]
+
+  indexes {
+    scheduled_departure_utc
+  }
+
+  Note: 'Рейс. Отслеживается, пока на него есть активный сегмент хотя бы одного бронирования'
+}
+
+Table status.flight_status_event {
+  event_id uuid [pk]
+  flight_key text [not null]
+  source_id uuid [not null]
+  sequence_no bigint [not null, note: 'Возрастает в пределах рейса. Глобальный счётчик потребовал бы единой точки выдачи при потоке 2000 сообщений в секунду']
+  event_at timestamptz [not null, note: 'Время события у провайдера. Основание для решений']
+  ingest_at timestamptz [not null, note: 'Время приёма системой. Основание для дедупликации, измерения лага и TTD, но не для решений']
+  status_kind status.flight_status_kind [not null]
+  new_departure_utc timestamptz
+  new_arrival_utc timestamptz
+  new_departure_terminal text
+  new_arrival_terminal text
+  payload_fingerprint text [not null, note: 'Свёртка содержания. Ловит повторную доставку одного и того же сообщения']
+  contradicts_event_id uuid [note: 'Заполняется, когда источники разошлись. FR-ING-03 требует сохранить факт противоречия']
+  applied bool [not null, note: 'Ложь у опоздавших и у проигравших по рангу. Сообщение сохраняется в любом случае']
+
+  indexes {
+    (flight_key, sequence_no) [unique]
+    (source_id, flight_key, event_at, status_kind) [unique, note: 'Ключ идемпотентности из каталога событий']
+    (flight_key, event_at)
+  }
+
+  Note: 'Сообщение о статусе рейса. Таблица только на вставку: ранее принятое сообщение не изменяется и не удаляется, FR-ING-02'
+}
+
+Table status.flight_state {
+  flight_key text [pk]
+  current_status_kind status.flight_status_kind [not null]
+  current_departure_utc timestamptz [not null]
+  current_arrival_utc timestamptz [not null]
+  decided_by_event_id uuid [not null, note: 'Какое сообщение определило состояние. Без этого материализация непроверяема']
+  decided_event_at timestamptz [not null]
+  freshness status.freshness_state [not null]
+  stale_after timestamptz [not null, note: 'Максимум из 15 минут и трёх интервалов опроса источника, NFR-REL-04. По истечении рейс переходит в неопределённость']
+  recomputed_at timestamptz [not null]
+
+  indexes {
+    stale_after
+  }
+
+  Note: 'Вычисленное текущее состояние рейса. Производное от потока сообщений, пересчитывается, а не правится'
+}
+
+Ref: status.mct_rule.airport_code > status.airport.iata_code
+Ref: status.flight.departure_airport > status.airport.iata_code
+Ref: status.flight.arrival_airport > status.airport.iata_code
+Ref: status.flight_status_event.flight_key > status.flight.flight_key
+Ref: status.flight_status_event.source_id > status.status_source.source_id
+Ref: status.flight_status_event.contradicts_event_id - status.flight_status_event.event_id
+Ref: status.flight_state.flight_key - status.flight.flight_key
+Ref: status.flight_state.decided_by_event_id - status.flight_status_event.event_id
+
+// ============================================================================
+// Схема disruption — сбой, влияние, решение, перебронирование
+// Писатель: C-ORCH
+// ============================================================================
+
+Enum disruption.disruption_kind {
+  delay
+  cancellation
+  retime
+  airport_change
+  misconnect
+}
+
+Enum disruption.impact_class {
+  feasible
+  feasible_at_risk
+  infeasible
+}
+
+Enum disruption.disruption_state {
+  detected
+  assessing
+  awaiting_decision
+  rebooking
+  resolved
+  escalated
+  closed
+}
+
+Enum disruption.impact_kind {
+  connection_broken
+  transfer_missed
+  hotel_missed
+  activity_missed
+  segment_cancelled
+}
+
+Enum disruption.decision_source {
+  traveller
+  organizer
+  auto_policy
+  operator
+}
+
+Enum disruption.rebooking_state {
+  held
+  authorized
+  issued
+  compensated
+  failed
+}
+
+Table disruption.disruption {
+  disruption_id uuid [pk]
+  booking_id uuid [not null, note: 'Логическая ссылка на trip.booking. Ключ партиционирования disruption.detected.v1, NFR-SCAL-02']
+  kind disruption.disruption_kind [not null]
+  impact_class disruption.impact_class [not null, note: 'Определяет ветку обработки в P-01']
+  state disruption.disruption_state [not null]
+  source_event_id uuid [not null, note: 'Логическая ссылка на status.flight_status_event: какое сообщение открыло сбой']
+  event_at timestamptz [not null, note: 'Время события у провайдера. Решения принимаются по нему']
+  opened_at timestamptz [not null]
+  ack_deadline_at timestamptz [note: 'Отсчёт с момента сдачи уведомления в первый канал лестницы, FR-DEC-02']
+  closed_at timestamptz
+  supersedes_disruption_id uuid [note: 'Повторный сбой после применённого решения, FR-DET-03. Отдельного канала событий под это нет']
+
+  indexes {
+    (booking_id, state)
+    state
+    opened_at
+  }
+
+  Note: 'Сбой — зафиксированный экземпляр IROPS по конкретному бронированию. Открывается детекцией, извне готовым не приходит'
+}
+
+Table disruption.disruption_impact {
+  impact_id uuid [pk]
+  disruption_id uuid [not null]
+  plan_item_id uuid [not null, note: 'Логическая ссылка на trip.plan_item']
+  kind disruption.impact_kind [not null]
+  applied_mct_minutes int [note: 'Снимок правила status.mct_rule на момент детекции. Справочник изменится, разбор пойдёт по действовавшему значению']
+  is_non_refundable bool [not null]
+  estimated_loss_minor bigint [note: 'Денежные потери при отмене невозвратного элемента, FR-IMP-02']
+  currency char(3)
+
+  indexes {
+    disruption_id
+  }
+
+  Note: 'Затронутый сбоем элемент плана. Затронутые участники выводятся отсюда через элемент плана и бронирование, отдельной таблицы не требуют'
+}
+
+Table disruption.decision {
+  decision_id uuid [pk]
+  disruption_id uuid [not null, unique]
+  source disruption.decision_source [not null, note: 'Основание решения. Обязательно для 100 процентов решений, NFR-OBS-01']
+  decided_by_participation_id uuid [note: 'Заполнено при source traveller или organizer']
+  mandate_id uuid [note: 'Мандат, действовавший в момент выбора. FR-GRP-02 проверяет действие на момент решения']
+  auto_policy_id uuid [note: 'Заполнено при source auto_policy']
+  alternative_id uuid [note: 'Логическая ссылка на alternative.alternative']
+  reason text [note: 'Обязателен при source operator']
+  decided_at timestamptz [not null]
+  applied_at timestamptz
+
+  Note: 'Решение по сбою. Одно на сбой: ответ после закрытия ack-окна не отменяет применённое решение, FR-DEC-05'
+}
+
+Table disruption.rebooking {
+  rebooking_id uuid [pk]
+  decision_id uuid [not null]
+  booking_id uuid [not null]
+  operation_key text [not null, unique, note: 'Составлен из disruption_id и booking_id. Повторный вызов с тем же ключом не выпускает второй билет, FR-REB-01']
+  state disruption.rebooking_state [not null]
+  new_ticket_number text
+  is_involuntary bool [not null, note: 'Вынужденное: тариф сохраняется, разница не начисляется, FR-REB-02']
+  fare_difference_minor bigint [note: 'Положительная требует авторизации до выпуска, отрицательная порождает возврат после']
+  refund_minor bigint
+  currency char(3)
+  attempts int [not null, default: 0, note: 'Повтор с нарастающим интервалом, бюджет 90 секунд, NFR-REL-03']
+  failure_reason text [note: 'Отказ перевозчика. Отклонённый вариант не предлагается повторно в рамках этого сбоя, FR-REB-04']
+  started_at timestamptz [not null]
+  finished_at timestamptz
+
+  indexes {
+    booking_id
+  }
+
+  Note: 'Перебронирование. Выполняет job worker C-REBOOK, результат сохраняет оркестратор: своей схемы у воркера нет, второй писатель у disruption недопустим'
+}
+
+Table disruption.processed_event {
+  idempotency_key text [pk, note: 'Ключ идемпотентности из каталога событий, не ключ партиционирования']
+  event_type text [not null]
+  processed_at timestamptz [not null]
+  expires_at timestamptz [not null, note: 'Срок превышает окно повторной доставки шины']
+
+  indexes {
+    expires_at
+  }
+
+  Note: 'Таблица обработанных событий C-ORCH-INBOX. Дедупликация происходит до корреляции с экземпляром процесса: иначе повторный disruption.detected.v1 сдвинул бы таймер ack-окна'
+}
+
+Table disruption.outbox_event {
+  outbox_id bigint [pk, increment]
+  aggregate_type text [not null]
+  aggregate_id uuid [not null]
+  event_type text [not null, note: 'disruption.notified.v1, decision.requested.v1, decision.reminded.v1, disruption.resolved.v1']
+  partition_key text [not null, note: 'disruption_id']
+  payload jsonb [not null]
+  occurred_at timestamptz [not null]
+  published_at timestamptz
+
+  indexes {
+    published_at
+  }
+
+  Note: 'Транзакционный outbox C-ORCH-STATE. Та же структура существует в схеме trip у C-PLAN'
+}
+
+Ref: disruption.disruption.supersedes_disruption_id - disruption.disruption.disruption_id
+Ref: disruption.disruption_impact.disruption_id > disruption.disruption.disruption_id
+Ref: disruption.decision.disruption_id - disruption.disruption.disruption_id
+Ref: disruption.rebooking.decision_id - disruption.decision.decision_id
+
+// ============================================================================
+// Схема alternative — подбор, варианты с TTL, результаты проверок
+// Писатель: C-ALT
+// ============================================================================
+
+Enum alternative.search_outcome {
+  options_found
+  no_options
+  constraints_unavailable
+}
+
+Enum alternative.alternative_verdict {
+  eligible
+  conditional
+  rejected
+}
+
+Enum alternative.check_kind {
+  mct
+  baggage
+  transit_visa
+  timezone
+  fare_difference
+}
+
+Enum alternative.check_outcome {
+  pass
+  conditional
+  fail
+}
+
+Table alternative.alternative_search {
+  search_id uuid [pk]
+  disruption_id uuid [not null, note: 'Логическая ссылка на disruption.disruption']
+  segment_id uuid [not null, note: 'Логическая ссылка на trip.segment: какой сегмент подбираем заново']
+  horizon_hours int [not null, default: 48]
+  requested_at timestamptz [not null]
+  completed_at timestamptz
+  outcome alternative.search_outcome [note: 'Для P-01 no_options и constraints_unavailable неразличимы, для наблюдаемости различать обязательно']
+  providers_polled int [not null, default: 0]
+
+  indexes {
+    disruption_id
+  }
+
+  Note: 'Подбор альтернатив, P-02. Окно сбора у провайдеров 20 секунд'
+}
+
+Table alternative.alternative {
+  alternative_id uuid [pk]
+  search_id uuid [not null]
+  rank int [note: 'Сохранение остального плана, затем время прибытия, затем разница тарифа. NULL у отклонённых']
+  verdict alternative.alternative_verdict [not null]
+  fare_difference_minor bigint [not null]
+  currency char(3) [not null]
+  is_involuntary bool [not null]
+  baggage_pieces int [not null, note: 'Сравнивается с нормой исходного билета, FR-ALT-03']
+  valid_until timestamptz [not null, note: 'TTL. Провайдер не держит место, пока путешественник думает']
+  rejection_reason text
+
+  indexes {
+    (search_id, rank)
+    valid_until
+  }
+
+  Note: 'Вариант продолжения поездки. Отклонённый по жёсткому ограничению не показывается и не может быть выбран авто-политикой, FR-ALT-07'
+}
+
+Table alternative.alternative_segment {
+  alternative_segment_id uuid [pk]
+  alternative_id uuid [not null]
+  sequence_no int [not null]
+  flight_key text [not null]
+  departure_airport char(3) [not null]
+  arrival_airport char(3) [not null]
+  departure_utc timestamptz [not null]
+  arrival_utc timestamptz [not null]
+
+  indexes {
+    (alternative_id, sequence_no) [unique]
+  }
+
+  Note: 'Сегмент предложенного маршрута. Отдельная таблица нужна потому, что перебронирование через другой хаб порождает новые стыковки, а FR-ALT-02 требует проверить MCT по всем стыковкам получившегося маршрута'
+}
+
+Table alternative.constraint_check {
+  check_id uuid [pk]
+  alternative_id uuid [not null]
+  kind alternative.check_kind [not null]
+  outcome alternative.check_outcome [not null]
+  reason text
+  applied_value text [note: 'Что именно сказал справочник: MCT в минутах, требуемый тип визы, норма багажа']
+  checked_at timestamptz [not null]
+
+  indexes {
+    (alternative_id, kind) [unique]
+  }
+
+  Note: 'Результат одной проверки ограничений. Хранится отдельно по каждой: FR-DEC-04 отдаёт оператору перечень отклонённых вариантов с причинами, и наполнить его нечем без записи на проверку'
+}
+
+Ref: alternative.alternative.search_id > alternative.alternative_search.search_id
+Ref: alternative.alternative_segment.alternative_id > alternative.alternative.alternative_id
+Ref: alternative.constraint_check.alternative_id > alternative.alternative.alternative_id
+
+// ============================================================================
+// Схема notification — уведомления, попытки доставки, предпочтения
+// Писатель: C-NOTIFY
+// ============================================================================
+
+Enum notification.notification_kind {
+  disruption_notice
+  decision_request
+  reminder
+  resolution_notice
+}
+
+Enum notification.notification_state {
+  active
+  superseded
+  acknowledged
+  ladder_exhausted
+}
+
+Enum notification.delivery_channel {
+  push
+  sms
+  email
+  voice
+}
+
+Enum notification.delivery_state {
+  sent
+  delivered
+  read
+  failed
+}
+
+Table notification.notification {
+  notification_id uuid [pk]
+  disruption_id uuid [not null, note: 'Логическая ссылка на disruption.disruption']
+  participation_id uuid [not null, note: 'Логическая ссылка на trip.trip_participation: кому адресовано']
+  kind notification.notification_kind [not null]
+  state notification.notification_state [not null]
+  created_at timestamptz [not null]
+  respond_by timestamptz [note: 'Срок ответа, показывается в тексте, FR-NTF-03']
+  supersedes_notification_id uuid [note: 'По одному сбою активно не более одного уведомления, новое заменяет предыдущее, FR-NTF-01']
+
+  indexes {
+    (disruption_id, state)
+  }
+
+  Note: 'Уведомление. История сохраняется: FR-NTF-04 показывает сбой и принятое решение тому, кто не получил уведомление вовремя'
+}
+
+Table notification.delivery_attempt {
+  attempt_id uuid [pk]
+  notification_id uuid [not null]
+  channel notification.delivery_channel [not null]
+  ladder_step int [not null, note: 'Номер шага лестницы каналов. Нужна история, а не признак текущего канала']
+  sent_at timestamptz [not null]
+  state notification.delivery_state [not null]
+  confirmed_at timestamptz [note: 'Когда провайдер канала подтвердил доставку. Факт отправки подтверждением не считается, FR-NTF-02']
+  error_code text
+
+  indexes {
+    (notification_id, ladder_step) [unique]
+  }
+
+  Note: 'Попытка доставки по одному каналу. Два времени вместо одного: отсчёт ack-окна идёт от сдачи в первый канал, переход к следующему — по подтверждению или его отсутствию'
+}
+
+Table notification.channel_preference {
+  preference_id uuid [pk]
+  traveller_id uuid [not null, note: 'Логическая ссылка на trip.traveller']
+  channel notification.delivery_channel [not null]
+  priority int [not null]
+  quiet_hours_from time [note: 'Локальное время путешественника']
+  quiet_hours_to time
+  quiet_hours_timezone text [note: 'IANA. Путешественник задаёт тихие часы в своём времени, а находиться может в другой точке']
+
+  indexes {
+    (traveller_id, channel) [unique]
+  }
+
+  Note: 'Предпочтение по каналам. Не применяется к сбоям с классом влияния infeasible, FR-NTF-01: это правило процесса, в модели не хранится'
+}
+
+Ref: notification.delivery_attempt.notification_id > notification.notification.notification_id
+Ref: notification.notification.supersedes_notification_id - notification.notification.notification_id
+
+// ============================================================================
+// Схема pii — контур паспортных данных
+// Отдельный инстанс C-VAULT. Пишет C-PII, удаляет C-RETENT
+//
+// Ни у одной таблицы этой схемы нет признака удаления. Удаление физическое.
+// Внешних ключей на travel_document из журнала и записей об удалении нет
+// намеренно: они переживают документ.
+// ============================================================================
+
+Enum pii.document_kind {
+  passport
+  id_card
+}
+
+Enum pii.access_subject_kind {
+  service
+  operator
+  traveller
+}
+
+Enum pii.access_operation {
+  read
+  transfer_to_provider
+  delete
+}
+
+Table pii.consent {
+  consent_id uuid [pk]
+  traveller_id uuid [not null]
+  text_version text [not null, note: 'Версия текста согласия. NFR-COMP-02: известна для 100 процентов записей']
+  obtained_at timestamptz [not null]
+  revoked_at timestamptz [note: 'При отзыве удаление в течение 30 суток, если нет предстоящей поездки']
+
+  indexes {
+    traveller_id
+  }
+
+  Note: 'Согласие на обработку персональных данных, 152-ФЗ'
+}
+
+Table pii.travel_document {
+  document_id uuid [pk]
+  traveller_id uuid [not null, note: 'Логическая ссылка на trip.traveller. Другой инстанс']
+  consent_id uuid [not null]
+  kind pii.document_kind [not null]
+  number_encrypted bytea [not null]
+  expires_at_encrypted bytea [not null]
+  birth_date_encrypted bytea [not null]
+  latin_name_encrypted bytea [not null]
+  mask text [not null, note: 'Последние четыре цифры. Отдельное поле, чтобы показ карточки не требовал расшифровки и записи в журнал доступа']
+  issuing_country char(2) [not null]
+  key_version int [not null, note: 'Версия ключа шифрования. Ротация раз в 90 суток, NFR-SEC-01']
+  retention_due_at timestamptz [not null, note: 'Дата завершения поездки плюс 30 суток. Хранится, а не вычисляется: P-04 переносит срок при продлении поездки']
+  loaded_at timestamptz [not null]
+
+  indexes {
+    traveller_id
+    retention_due_at
+  }
+
+  Note: 'Паспортный документ. Состав полей ограничен тем, что нужно для выпуска перевозки, NFR-COMP-03. Признака удаления нет: удаление физическое'
+}
+
+Table pii.access_grant {
+  grant_id uuid [pk]
+  document_id uuid [not null]
+  subject_kind pii.access_subject_kind [not null]
+  subject text [not null]
+  disruption_id uuid [note: 'Основание доступа оператора: конкретный сбой, FR-PII-05']
+  justification text
+  granted_at timestamptz [not null]
+  expires_at timestamptz [not null, note: 'Оператору не больше 60 минут, прекращается автоматически']
+  revoked_at timestamptz
+
+  indexes {
+    (document_id, expires_at)
+  }
+
+  Note: 'Выданный доступ — разрешение. Факт обращения фиксирует document_access_log: одна сущность на двоих не позволила бы отличить выданный и не использованный доступ от использованного'
+}
+
+Table pii.document_access_log {
+  log_id uuid [pk]
+  document_id uuid [not null, note: 'Значение, а не внешний ключ. Журнал переживает документ']
+  subject text [not null]
+  operation pii.access_operation [not null]
+  disruption_id uuid
+  justification text
+  occurred_at timestamptz [not null]
+
+  indexes {
+    document_id
+    occurred_at
+  }
+
+  Note: 'Журнал доступа. Неизменяем: операций изменения и удаления записей нет. Оператор поддержки права чтения не имеет, NFR-SEC-02. Срок хранения 3 года'
+}
+
+Table pii.purge_run {
+  purge_run_id uuid [pk]
+  started_at timestamptz [not null]
+  finished_at timestamptz
+  checked_count int [not null, default: 0]
+  deleted_count int [not null, default: 0]
+  overdue_left_count int [not null, default: 0, note: 'Больше нуля — публикуется pii.purge.mismatch.v1, P-04.M1']
+
+  Note: 'Прогон удаления. Ежесуточная сверка, NFR-COMP-01'
+}
+
+Table pii.purge_record {
+  purge_record_id uuid [pk]
+  purge_run_id uuid [not null]
+  document_id uuid [not null, note: 'Значение. Самого документа больше нет. Содержимого здесь нет и не было']
+  traveller_id uuid [not null]
+  retention_due_at timestamptz [not null]
+  deleted_at timestamptz [not null]
+
+  indexes {
+    (purge_run_id)
+    deleted_at
+  }
+
+  Note: 'Доказательство удаления. Отчёт об удалении за произвольный период строится по этим записям, а не по документам, которых уже нет'
+}
+
+Ref: pii.travel_document.consent_id > pii.consent.consent_id
+Ref: pii.access_grant.document_id > pii.travel_document.document_id
+Ref: pii.purge_record.purge_run_id > pii.purge_run.purge_run_id
