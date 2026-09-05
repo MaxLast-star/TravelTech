@@ -1,8 +1,2016 @@
 openapi: 3.1.0
+
 info:
   title: TravelTech IROPS API
-  version: 0.1.0
-  description: Черновик. Заполняется на шаге 06.
+  version: 1.0.0
+  summary: Синхронный контракт сервиса отслеживания сбоев рейсов и перебронирования
+  description: |
+    План поездки, карточка сбоя, выбор альтернативы, настройки авто-политики и
+    каналов, контур паспортных данных, групповые действия. Владелец контракта —
+    `C-API`. События шины — в [AsyncAPI](/api/async).
+
+    | Механика | Как выглядит в запросе |
+    |---|---|
+    | Версионирование | префикс пути `/v1` |
+    | Идемпотентность | `Idempotency-Key` на каждой мутации |
+    | Условное обновление | `ETag` при чтении, обязательный `If-Match` при изменении |
+    | Ошибки | RFC 9457, `application/problem+json` |
+    | Пагинация | курсорная: `cursor`, `limit` → `items`, `next_cursor` |
+    | Времена | UTC в RFC 3339 плюс отдельное поле таймзоны IANA |
+
+    Почему именно так — на странице [синхронного API](/api/sync). Там же реестр
+    типов ошибок и правила совместимости.
+  contact:
+    name: TravelTech IROPS
+    url: https://github.com/MaxLast-star/TravelTech
+
 servers:
-  - url: https://api.example.com
-paths: {}
+  - url: https://api.traveltech.example/v1
+    description: Промышленная среда
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Поездки и план
+    description: Поездки, план с проверкой версии, история версий, бронирование со статусом рейсов.
+  - name: Сбои
+    description: 'Карточка сбоя, годные альтернативы, приём решения. Метода создания сбоя нет: сбой создаёт детекция внутри системы.'
+  - name: Групповые действия
+    description: Участники и роли, мандат организатора, отказ от общего решения, пакетное решение за нескольких участников.
+  - name: Настройки
+    description: Авто-политика на поездку и на бронирование, лестница каналов доставки.
+  - name: Паспортные данные
+    description: |
+      Запись документа, досрочное удаление, отчёт об удалении.
+
+      **Метода чтения паспортных данных нет** — это ограничение `FR-PII-02`, а не
+      пропуск. Наружу отдаются только `document_ref` и маска. Полное содержимое
+      доступно одному потребителю — сервису выпуска перевозки, в объёме
+      `FR-PII-06`, по внутреннему интерфейсу `C-PII`.
+  - name: Вебхуки
+    description: Входящие вызовы внешних провайдеров.
+
+paths:
+
+  /trips:
+    get:
+      operationId: listTrips
+      summary: Поездки путешественника
+      description: Поездки, в которых у вызывающего есть участие. Роль возвращается на участии.
+      tags: [Поездки и план]
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+        - name: state
+          in: query
+          schema:
+            $ref: '#/components/schemas/TripState'
+      responses:
+        '200':
+          description: Страница поездок.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/TripSummary'
+                  next_cursor:
+                    $ref: '#/components/schemas/NextCursor'
+              example:
+                items:
+                  - trip_id: 1f7d3a90-4c21-4e08-9b52-0a6d8e3f1c47
+                    title: Токио, сентябрь
+                    state: active
+                    starts_at_utc: '2026-09-04T18:30:00Z'
+                    ends_at_utc: '2026-09-14T09:10:00Z'
+                    completed_at_utc: null
+                    current_plan_version: 3
+                    my_role: organizer
+                    open_disruptions_count: 1
+                next_cursor: null
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /trips/{tripId}/plan:
+    parameters:
+      - $ref: '#/components/parameters/TripId'
+    get:
+      operationId: getTripPlan
+      summary: Текущая версия плана
+      description: |
+        Текущая версия плана со всеми элементами. `ETag` — номер версии, он же
+        идёт в `If-Match` при изменении. У каждого элемента своя таймзона:
+        локальное время не хранится, клиент считает его сам.
+      tags: [Поездки и план]
+      responses:
+        '200':
+          description: План поездки.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TripPlan'
+              example:
+                trip_id: 1f7d3a90-4c21-4e08-9b52-0a6d8e3f1c47
+                version_no: 3
+                created_at: '2026-09-05T06:34:02Z'
+                caused_by_disruption_id: 4e2b1a90-77cd-4f31-8f0a-9c3d2b6e5a17
+                change_summary: Замена сегмента SVO–HND, перенос трансфера
+                items:
+                  - plan_item_id: 6b1d0d84-2b5f-4f0e-9a4a-5d0b7f9a1c22
+                    kind: segment
+                    segment_id: a8e1c0b7-93f4-4d2a-8c15-7e6b0d4f2a93
+                    title: SU 261 SVO — HND
+                    timezone: Europe/Moscow
+                    is_refundable: false
+                    state: ok
+                  - plan_item_id: 91f5a2e3-1c44-4a77-8f2b-3e6c9a0d4b15
+                    kind: transfer
+                    supplier_code: tokyo-cars
+                    title: Трансфер HND — отель
+                    starts_at_utc: '2026-09-05T22:40:00Z'
+                    ends_at_utc: '2026-09-05T23:30:00Z'
+                    timezone: Asia/Tokyo
+                    is_refundable: true
+                    state: rescheduled
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      operationId: updateTripPlan
+      summary: Перенести или отменить элементы плана
+      description: |
+        Ручное изменение трансферов, заездов и активностей, а также ответ по
+        невозвратному элементу, который система не отменяет сама (`FR-PLN-03`).
+
+        Сегменты этой операцией не меняются — замена сегмента следует из
+        перебронирования; элемент вида `segment` отклоняется с `422`. Успех
+        создаёт новую версию плана, её номер — в `ETag` ответа.
+      tags: [Поездки и план]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlanUpdateRequest'
+      responses:
+        '200':
+          description: План обновлён, создана новая версия.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TripPlan'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+
+  /trips/{tripId}/plan/versions:
+    get:
+      operationId: listPlanVersions
+      summary: История версий плана
+      description: |
+        Версии от новой к старой. У версии, созданной сбоем, заполнен
+        `caused_by_disruption_id` (`FR-PLN-01`).
+      tags: [Поездки и план]
+      parameters:
+        - $ref: '#/components/parameters/TripId'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Страница версий плана.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PlanVersion'
+                  next_cursor:
+                    $ref: '#/components/schemas/NextCursor'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /bookings/{bookingId}:
+    get:
+      operationId: getBooking
+      summary: Бронирование с сегментами и статусом рейсов
+      description: |
+        Сегменты и текущий статус рейса по каждому. `freshness = stale` означает,
+        что возраст статуса превысил порог: показывать неопределённость, а не
+        последний известный статус как текущий.
+
+        Отдаются `pii_document_ref` и маска; содержимого документа нет.
+      tags: [Поездки и план]
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      responses:
+        '200':
+          description: Бронирование.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Booking'
+              example:
+                booking_id: 2d5e8f10-6b3c-4a97-8e42-1f0c7b9d3a56
+                trip_id: 1f7d3a90-4c21-4e08-9b52-0a6d8e3f1c47
+                participation_id: 7a4c2b81-5d09-4e63-9f18-3c6a0e5b7d24
+                pnr: QK7T2P
+                provider_code: SU
+                state: issued
+                fare_basis: YIF
+                fare: { amount_minor: 8450000, currency: RUB }
+                baggage_pieces: 1
+                baggage_weight_kg: 23
+                is_refundable: false
+                pii_document_ref: 2c9f7b41-8a3d-4e15-9f60-1b8c5a7d2e04
+                pii_document_mask: '•••• 4417'
+                segments:
+                  - segment_id: a8e1c0b7-93f4-4d2a-8c15-7e6b0d4f2a93
+                    sequence_no: 1
+                    flight_key: SU0261-2026-09-04
+                    marketing_carrier: SU
+                    flight_number: '261'
+                    departure_airport: SVO
+                    arrival_airport: HND
+                    departure_timezone: Europe/Moscow
+                    arrival_timezone: Asia/Tokyo
+                    scheduled_departure_utc: '2026-09-04T18:30:00Z'
+                    scheduled_arrival_utc: '2026-09-05T07:20:00Z'
+                    cabin: economy
+                    state: planned
+                    flight_status:
+                      status_kind: cancelled
+                      current_departure_utc: '2026-09-04T18:30:00Z'
+                      current_arrival_utc: '2026-09-05T07:20:00Z'
+                      event_at: '2026-09-04T12:12:00Z'
+                      ingest_at: '2026-09-04T12:14:31Z'
+                      source_code: carrier-push-su
+                      trust_rank: 30
+                      freshness: fresh
+                      stale_after: '2026-09-04T12:29:31Z'
+                      has_contradiction: false
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /disruptions:
+    get:
+      operationId: listDisruptions
+      summary: Сбои
+      description: |
+        Путешественник видит сбои по своим бронированиям, организатор — по всем
+        участникам своей поездки, оператор поддержки — очередь эскалаций по
+        фильтру `state=escalated`.
+      tags: [Сбои]
+      parameters:
+        - name: trip_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: booking_id
+          in: query
+          schema: { type: string, format: uuid }
+        - name: state
+          in: query
+          description: Повторяется для нескольких значений.
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/DisruptionState'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Страница сбоев.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/DisruptionSummary'
+                  next_cursor:
+                    $ref: '#/components/schemas/NextCursor'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /disruptions/{disruptionId}:
+    get:
+      operationId: getDisruption
+      summary: Карточка сбоя
+      description: |
+        Тип, класс влияния, состояние, затронутые элементы и участники, срок
+        ответа и решение с основанием (`NFR-OBS-01`).
+
+        Карточка доступна и после истечения ack-окна: не получивший уведомление
+        вовремя при следующем входе видит и сбой, и применённое решение
+        (`FR-NTF-04`). `supersedes_disruption_id` заполнен у повторного сбоя.
+      tags: [Сбои]
+      parameters:
+        - $ref: '#/components/parameters/DisruptionId'
+      responses:
+        '200':
+          description: Карточка сбоя.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Disruption'
+              example:
+                disruption_id: 4e2b1a90-77cd-4f31-8f0a-9c3d2b6e5a17
+                booking_id: 2d5e8f10-6b3c-4a97-8e42-1f0c7b9d3a56
+                trip_id: 1f7d3a90-4c21-4e08-9b52-0a6d8e3f1c47
+                segment_id: a8e1c0b7-93f4-4d2a-8c15-7e6b0d4f2a93
+                kind: cancellation
+                impact_class: infeasible
+                state: awaiting_decision
+                event_at: '2026-09-04T12:12:00Z'
+                opened_at: '2026-09-04T12:14:47Z'
+                ack_deadline_at: '2026-09-04T12:36:10Z'
+                closed_at: null
+                supersedes_disruption_id: null
+                impacts:
+                  - impact_id: b0d7e3a5-4c18-49f2-a6e0-2d5b8c1f7093
+                    plan_item_id: 91f5a2e3-1c44-4a77-8f2b-3e6c9a0d4b15
+                    kind: transfer_missed
+                    applied_mct_minutes: null
+                    is_non_refundable: false
+                affected_participations:
+                  - participation_id: 7a4c2b81-5d09-4e63-9f18-3c6a0e5b7d24
+                    display_name: Максим Л.
+                    role: organizer
+                decision: null
+                escalation_reason: null
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /disruptions/{disruptionId}/alternatives:
+    get:
+      operationId: listAlternatives
+      summary: Альтернативы по сбою
+      description: |
+        Годные варианты, отранжированные по сохранению остального плана, затем по
+        времени прибытия, затем по разнице тарифа. Отклонённые по жёсткому
+        ограничению не показываются и не могут быть выбраны авто-политикой
+        (`FR-ALT-07`).
+
+        `include=rejected` добавляет отклонённые с причинами — только оператору
+        поддержки, это содержимое эскалации (`FR-DEC-04`). У каждого варианта
+        есть `valid_until`: просроченный в выборе отклоняется с `422`.
+      tags: [Сбои]
+      parameters:
+        - $ref: '#/components/parameters/DisruptionId'
+        - name: include
+          in: query
+          description: Только для оператора поддержки, остальным `403`.
+          schema:
+            type: string
+            enum: [rejected]
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Страница альтернатив и сведения о подборе.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlternativesPage'
+              example:
+                items:
+                  - alternative_id: c3a9f0d2-6e51-4b7d-9c88-2a1f4e7b0d63
+                    rank: 1
+                    verdict: eligible
+                    fare_difference: { amount_minor: 0, currency: RUB }
+                    is_involuntary: true
+                    baggage_pieces: 1
+                    valid_until: '2026-09-04T13:05:00Z'
+                    rejection_reason: null
+                    segments:
+                      - sequence_no: 1
+                        flight_key: SU0263-2026-09-04
+                        marketing_carrier: SU
+                        flight_number: '263'
+                        departure_airport: SVO
+                        arrival_airport: HND
+                        departure_timezone: Europe/Moscow
+                        arrival_timezone: Asia/Tokyo
+                        departure_utc: '2026-09-04T22:10:00Z'
+                        arrival_utc: '2026-09-05T11:05:00Z'
+                    checks:
+                      - kind: mct
+                        outcome: pass
+                        applied_value: '90'
+                        checked_at: '2026-09-04T12:15:22Z'
+                      - kind: baggage
+                        outcome: pass
+                        applied_value: 1 место, 23 кг
+                        checked_at: '2026-09-04T12:15:22Z'
+                      - kind: transit_visa
+                        outcome: pass
+                        reason: Прямой рейс, транзита нет
+                        checked_at: '2026-09-04T12:15:23Z'
+                      - kind: timezone
+                        outcome: pass
+                        checked_at: '2026-09-04T12:15:23Z'
+                      - kind: fare_difference
+                        outcome: pass
+                        applied_value: Вынужденное, разница не начисляется
+                        checked_at: '2026-09-04T12:15:23Z'
+                next_cursor: null
+                search:
+                  search_id: 5c8b1e47-0a92-4d36-b7f1-8e2d4a6c0b95
+                  outcome: options_found
+                  horizon_hours: 48
+                  providers_polled: 3
+                  requested_at: '2026-09-04T12:14:52Z'
+                  completed_at: '2026-09-04T12:15:24Z'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '503': { $ref: '#/components/responses/Degraded' }
+
+  /disruptions/{disruptionId}/decision:
+    post:
+      operationId: submitDecision
+      summary: Принять решение по сбою
+      description: |
+        Выбор альтернативы путешественником или организатором с действующим
+        мандатом; мандат проверяется на момент выбора (`FR-GRP-02`).
+
+        Положительная разница тарифа требует согласия в `accept_fare_difference`,
+        совпадающего с разницей выбранного варианта, иначе `422`. Ответ после
+        закрытия ack-окна применённое решение не отменяет — `409` с телом
+        принятого решения (`FR-DEC-05`).
+
+        `202` означает, что решение принято и запущено перебронирование; исход
+        придёт событием `disruption.resolved.v1`.
+      tags: [Сбои]
+      parameters:
+        - $ref: '#/components/parameters/DisruptionId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DecisionRequest'
+      responses:
+        '202':
+          description: Решение принято, перебронирование запущено.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Decision'
+              example:
+                decision_id: 8d1f3c22-0b47-4a90-9e63-5f2a7c1d4b08
+                source: traveller
+                decided_by_participation_id: 7a4c2b81-5d09-4e63-9f18-3c6a0e5b7d24
+                mandate_id: null
+                auto_policy_id: null
+                alternative_id: c3a9f0d2-6e51-4b7d-9c88-2a1f4e7b0d63
+                reason: null
+                decided_at: '2026-09-04T12:21:09Z'
+                applied_at: null
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/DecisionConflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+
+  /disruptions/{disruptionId}/opt-out:
+    post:
+      operationId: optOutOfGroupDecision
+      summary: Отказаться от общего решения
+      description: |
+        Участник отказывается от решения организатора, его сбой дальше
+        обрабатывается индивидуально (`FR-GRP-03`). После выпуска билета отказ
+        отклоняется с `409`: обратный ход — это новый сбой.
+      tags: [Групповые действия]
+      parameters:
+        - $ref: '#/components/parameters/DisruptionId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  maxLength: 500
+                  description: Необязательное пояснение, видно организатору.
+            example:
+              reason: Лечу другим рейсом, у меня стыковка в Сеуле
+      responses:
+        '202':
+          description: Отказ принят, сбой возвращён в состояние выбора альтернативы.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DisruptionSummary'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /trips/{tripId}/auto-policy:
+    parameters:
+      - $ref: '#/components/parameters/TripId'
+    get:
+      operationId: getTripAutoPolicy
+      summary: Авто-политика поездки
+      description: Применяется к бронированиям поездки, у которых нет своей политики.
+      tags: [Настройки]
+      responses:
+        '200':
+          description: Авто-политика поездки.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AutoPolicy'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      operationId: putTripAutoPolicy
+      summary: Задать авто-политику поездки
+      description: |
+        Задаёт организатор. Ненулевой `max_surcharge` без `payer_consent_at`
+        недействителен — `FR-DEC-03` запрещает решение с доплатой без согласия
+        плательщика, запрос отклоняется с `422`.
+      tags: [Настройки]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatchOrNew'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AutoPolicyRequest'
+      responses:
+        '200':
+          description: Авто-политика сохранена.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AutoPolicy'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+
+  /bookings/{bookingId}/auto-policy:
+    parameters:
+      - $ref: '#/components/parameters/BookingId'
+    get:
+      operationId: getBookingAutoPolicy
+      summary: Авто-политика бронирования
+      description: Перекрывает политику поездки целиком (`FR-DEC-02`).
+      tags: [Настройки]
+      responses:
+        '200':
+          description: Авто-политика бронирования.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AutoPolicy'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      operationId: putBookingAutoPolicy
+      summary: Задать авто-политику бронирования
+      description: |
+        Задаёт путешественник. Перекрывает политику поездки целиком, а не по
+        полям: иначе организатор поднял бы чужой порог доплаты, не трогая чужую
+        стратегию.
+      tags: [Настройки]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatchOrNew'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AutoPolicyRequest'
+      responses:
+        '200':
+          description: Авто-политика сохранена.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AutoPolicy'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+
+  /me/channel-preferences:
+    get:
+      operationId: getChannelPreferences
+      summary: Предпочтения по каналам
+      description: |
+        Лестница каналов вызывающего. Тихие часы задаются в локальном времени
+        вместе с таймзоной, в которой заданы: человек назначает «не беспокоить»
+        дома, а находиться может на другом континенте.
+      tags: [Настройки]
+      responses:
+        '200':
+          description: Предпочтения по каналам.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelPreferences'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    put:
+      operationId: putChannelPreferences
+      summary: Задать предпочтения по каналам
+      description: |
+        Набор заменяется целиком: частичное обновление порождает дыры и повторы в
+        приоритетах.
+
+        К сбоям с классом влияния «план неисполним» ограничения не применяются
+        (`FR-NTF-01`) — это правило процесса, поля под него в запросе нет.
+      tags: [Настройки]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/IfMatch'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChannelPreferencesRequest'
+      responses:
+        '200':
+          description: Предпочтения сохранены.
+          headers:
+            ETag: { $ref: '#/components/headers/ETag' }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChannelPreferences'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '412': { $ref: '#/components/responses/PreconditionFailed' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+        '428': { $ref: '#/components/responses/PreconditionRequired' }
+
+  /travel-documents:
+    post:
+      operationId: createTravelDocument
+      summary: Записать паспортные данные
+      description: |
+        Единственный способ поместить паспортные данные в систему. Тело уходит в
+        контур ПДн и в основное хранилище не попадает.
+
+        Ответ содержит `document_ref` и маску — и только их. **Обратной операции
+        нет**: метода, возвращающего записанные значения, в контракте не
+        существует, в том числе для того, кто их записал (`FR-PII-02`).
+
+        Согласие обязательно (`NFR-COMP-02`). `retention_due_at` — дата
+        завершения поездки плюс 30 суток; по истечении запись удаляется физически.
+      tags: [Паспортные данные]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TravelDocumentRequest'
+      responses:
+        '201':
+          description: Документ записан. Возвращены ссылка и маска, содержимое — нет.
+          headers:
+            Location:
+              description: Ссылка на запись контура ПДн.
+              schema: { type: string, format: uri-reference }
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TravelDocumentRef'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+
+  /travel-documents/{documentRef}:
+    delete:
+      operationId: deleteTravelDocument
+      summary: Удалить паспортные данные досрочно
+      description: |
+        Досрочное удаление по требованию путешественника (`FR-PII-07`). Удаление
+        физическое: остаётся доказательство — идентификатор записи, срок
+        удержания и время удаления, без реквизитов.
+
+        `409`, если по бронированиям есть предстоящая поездка: без документа
+        перевозку не выпустить. Метода `GET` у этого пути нет.
+      tags: [Паспортные данные]
+      parameters:
+        - $ref: '#/components/parameters/DocumentRef'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '204':
+          description: Документ удалён физически.
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /retention/purge-report:
+    get:
+      operationId: getPurgeReport
+      summary: Отчёт об удалении за период
+      description: |
+        Строится по доказательствам удаления, а не по документам: документов уже
+        нет, и это единственный способ подтвердить соблюдение срока
+        (`NFR-COMP-01`). Реквизитов не содержит.
+
+        `overdue_left_count` больше нуля — расхождение; тот же факт публикуется
+        событием `pii.purge.mismatch.v1`. Доступ — комплаенс и дежурный, оператор
+        поддержки прав не имеет.
+      tags: [Паспортные данные]
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: true
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Отчёт об удалении.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurgeReport'
+              example:
+                from: '2026-08-01T00:00:00Z'
+                to: '2026-09-01T00:00:00Z'
+                generated_at: '2026-09-01T03:00:12Z'
+                checked_count: 18342
+                deleted_count: 907
+                overdue_left_count: 0
+                runs:
+                  - purge_run_id: e7a1c3d8-5b62-4f09-9a37-0c4e2b8d1f65
+                    started_at: '2026-08-31T02:00:00Z'
+                    finished_at: '2026-08-31T02:04:19Z'
+                    checked_count: 612
+                    deleted_count: 31
+                    overdue_left_count: 0
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+
+  /trips/{tripId}/participants:
+    get:
+      operationId: listParticipants
+      summary: Участники поездки
+      description: |
+        Роли и состояние мандата. Роль возвращается на участии, а не на
+        путешественнике (`FR-GRP-01`). Паспортных данных в ответе нет ни в каком
+        виде, включая маску.
+      tags: [Групповые действия]
+      parameters:
+        - $ref: '#/components/parameters/TripId'
+      responses:
+        '200':
+          description: Участники поездки.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Participant'
+              example:
+                items:
+                  - participation_id: 7a4c2b81-5d09-4e63-9f18-3c6a0e5b7d24
+                    traveller_id: 0e9b5d13-8c47-4a20-b6f5-2d1a7c8e4b09
+                    display_name: Максим Л.
+                    role: organizer
+                    joined_at: '2026-07-12T09:03:00Z'
+                    left_at: null
+                    mandate: null
+                  - participation_id: 3b8f1e05-2a76-4c93-8d41-5e7c0b2a9d63
+                    traveller_id: 6c2d9a48-1f03-4b57-9e82-4a0d3c6b8e15
+                    display_name: Анна К.
+                    role: participant
+                    joined_at: '2026-07-12T09:05:00Z'
+                    left_at: null
+                    mandate:
+                      mandate_id: b7c4e91a-3d20-4f68-8a15-6e0c2b9d7f43
+                      granted_by_participation_id: 3b8f1e05-2a76-4c93-8d41-5e7c0b2a9d63
+                      granted_to_participation_id: 7a4c2b81-5d09-4e63-9f18-3c6a0e5b7d24
+                      granted_at: '2026-07-12T09:11:00Z'
+                      revoked_at: null
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /trips/{tripId}/participants/{participationId}/mandate:
+    parameters:
+      - $ref: '#/components/parameters/TripId'
+      - $ref: '#/components/parameters/ParticipationId'
+    put:
+      operationId: grantMandate
+      summary: Выдать мандат организатору
+      description: |
+        Мандат выдаёт участник от своего имени. Вызывающий обязан быть владельцем
+        участия `participationId`: выдать мандат за другого нельзя, организатор
+        не может выдать его сам себе.
+
+        Хранится интервалом, а не признаком: решение, принятое до отзыва,
+        остаётся действительным (`FR-GRP-02`).
+      tags: [Групповые действия]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [granted_to_participation_id]
+              properties:
+                granted_to_participation_id:
+                  type: string
+                  format: uuid
+                  description: Участие организатора, которому выдаётся мандат.
+            example:
+              granted_to_participation_id: 7a4c2b81-5d09-4e63-9f18-3c6a0e5b7d24
+      responses:
+        '200':
+          description: Мандат выдан.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Mandate'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+    delete:
+      operationId: revokeMandate
+      summary: Отозвать мандат
+      description: |
+        Закрывает интервал действия временем отзыва. Решения, принятые до этого
+        момента, в силе: для отказа от принятого решения есть `optOutOfGroupDecision`.
+      tags: [Групповые действия]
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      responses:
+        '204':
+          description: Мандат отозван.
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /trips/{tripId}/group-decisions:
+    post:
+      operationId: submitGroupDecision
+      summary: Решение организатора за нескольких участников
+      description: |
+        Одна строка на сбой, по одному сбою на участника. Ответ всегда `207`:
+        общее решение применяется к каждому участнику отдельной операцией
+        перебронирования, и неуспех у одного не отменяет остальных (`FR-GRP-04`).
+
+        Повтор строки в пределах запроса — `422`.
+      tags: [Групповые действия]
+      parameters:
+        - $ref: '#/components/parameters/TripId'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GroupDecisionRequest'
+      responses:
+        '207':
+          description: |
+            Результат по каждой строке отдельно. `207` возвращается и когда все
+            строки успешны: единый код избавляет клиента от двух веток разбора.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GroupDecisionResponse'
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+
+webhooks:
+
+  flightStatusPushed:
+    post:
+      operationId: flightStatusPushed
+      summary: Push статуса рейса от провайдера
+      description: |
+        Провайдер статусов вызывает этот адрес при изменении статуса. Принимает
+        `C-INGEST`.
+
+        `202` означает, что сообщение принято в обработку, а не что оно применено
+        к состоянию рейса: применение решает детекция по рангу источника и
+        `event_at`. Повторная доставка безопасна — ключ идемпотентности
+        `source_code`, `flight_key`, `event_at`, тип статуса.
+
+        Сообщение, из которого статус извлечь не удалось, тоже принимается с
+        `202` и уходит оператору поддержки (`FR-ING-01`): отказ провайдеру привёл
+        бы к бесконечному повтору неразбираемого сообщения.
+      tags: [Вебхуки]
+      security:
+        - webhookSignature: []
+      parameters:
+        - name: X-Signature
+          in: header
+          required: true
+          description: Подпись тела ключом источника. Неверная — сообщение отбрасывается без разбора тела.
+          schema: { type: string }
+        - name: X-Delivery-Id
+          in: header
+          required: true
+          description: Идентификатор доставки на стороне провайдера, для разбора инцидентов.
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FlightStatusPush'
+      responses:
+        '202':
+          description: Сообщение принято в обработку.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  rebookingCompleted:
+    post:
+      operationId: rebookingCompleted
+      summary: Результат выпуска перебронирования
+      description: |
+        Провайдер бронирования сообщает исход выпуска по ключу операции.
+        Принимает `C-REBOOK`.
+
+        Повторный вызов с тем же ключом не выпускает второй билет и не меняет
+        зафиксированный исход (`FR-REB-01`). Исход `failed` запускает компенсацию
+        саги и возвращает сбой в состояние выбора альтернативы (`FR-REB-03`);
+        отклонённый вариант повторно не предлагается.
+      tags: [Вебхуки]
+      security:
+        - webhookSignature: []
+      parameters:
+        - name: X-Signature
+          in: header
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RebookingCallback'
+      responses:
+        '202':
+          description: Результат принят.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+components:
+
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Токен путешественника, организатора или оператора поддержки. Права
+        проверяются в паре «человек и поездка»: роль принадлежит участию, поэтому
+        вопрос «организатор ли он» без указания поездки ответа не имеет.
+    webhookSignature:
+      type: apiKey
+      in: header
+      name: X-Signature
+      description: Подпись тела запроса ключом внешнего провайдера.
+
+  parameters:
+
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: |
+        Ключ, уникальный на попытку. Хранится 24 часа со свёрткой тела и кодом
+        ответа. Тот же ключ и то же тело — сохранённый ответ; тот же ключ и другое
+        тело — `409`.
+      schema: { type: string, minLength: 16, maxLength: 128 }
+      example: 5f1c2a7e-9d3b-4c8a-a1f2-7b0e4d6c9a13
+
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      description: 'Версия из `ETag`. Обязателен: без него `428`, несовпадение — `412`.'
+      schema: { type: string }
+      example: '"3"'
+
+    IfMatchOrNew:
+      name: If-Match
+      in: header
+      required: true
+      description: Версия из `ETag`; `*` — создание записи, которой ещё нет.
+      schema: { type: string }
+      example: '*'
+
+    Cursor:
+      name: cursor
+      in: query
+      description: Курсор из `next_cursor` предыдущего ответа.
+      schema: { type: string }
+
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+
+    TripId:
+      name: tripId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+    BookingId:
+      name: bookingId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+    DisruptionId:
+      name: disruptionId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+    ParticipationId:
+      name: participationId
+      in: path
+      required: true
+      description: Участие, от имени которого выдаётся или отзывается мандат.
+      schema: { type: string, format: uuid }
+
+    DocumentRef:
+      name: documentRef
+      in: path
+      required: true
+      description: Ссылка на запись контура ПДн. Реквизитов не содержит.
+      schema: { type: string, format: uuid }
+
+  headers:
+    ETag:
+      description: Версия состояния. Передаётся обратно в `If-Match`.
+      schema: { type: string }
+    RetryAfter:
+      description: Через сколько секунд повторить запрос.
+      schema: { type: integer }
+
+  responses:
+
+    BadRequest:
+      description: Запрос синтаксически неверен.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+
+    Unauthorized:
+      description: Токен или подпись отсутствуют, истекли или неверны.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+
+    Forbidden:
+      description: |
+        Прав на операцию нет. Попытка получить паспортные данные не только
+        отклоняется, но и поднимает алерт (`NFR-SEC-01`).
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+
+    NotFound:
+      description: Ресурса нет либо он недоступен. Различие наружу не выносится намеренно.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+
+    Conflict:
+      description: Состояние ресурса несовместимо с операцией.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+          example:
+            type: https://api.traveltech.example/problems/idempotency-key-reuse
+            title: Ключ идемпотентности уже использован с другим телом запроса
+            status: 409
+            detail: Ключ 5f1c2a7e-9d3b-4c8a-a1f2-7b0e4d6c9a13 принадлежит другому запросу.
+            trace_id: 0af7651916cd43dd8448eb211c80319c
+
+    DecisionConflict:
+      description: |
+        Решение уже принято и применено. Ответ после закрытия ack-окна его не
+        отменяет (`FR-DEC-05`).
+      content:
+        application/problem+json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/Problem'
+              - type: object
+                properties:
+                  applied_decision:
+                    $ref: '#/components/schemas/Decision'
+                  new_disruption_id:
+                    type: [string, 'null']
+                    format: uuid
+                    description: Сбой для нового выбора, если он открыт.
+          example:
+            type: https://api.traveltech.example/problems/decision-already-applied
+            title: Решение по сбою уже принято
+            status: 409
+            detail: Ack-окно закрылось 2026-09-04T12:36:10Z, применена авто-политика бронирования.
+            trace_id: 0af7651916cd43dd8448eb211c80319c
+            new_disruption_id: null
+
+    PreconditionFailed:
+      description: Версия в `If-Match` не совпадает с текущей. Состояние не изменено.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+
+    PreconditionRequired:
+      description: Обязательный `If-Match` не передан.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+
+    UnprocessableEntity:
+      description: |
+        Тело верно синтаксически, но нарушает правило предметной области:
+        просроченный вариант, доплата без согласия, элемент вида `segment` в
+        ручном изменении плана.
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+          example:
+            type: https://api.traveltech.example/problems/fare-difference-not-accepted
+            title: Требуется согласие на разницу тарифа
+            status: 422
+            detail: Разница тарифа 4500 RUB, согласие в запросе отсутствует или не совпадает.
+            trace_id: 0af7651916cd43dd8448eb211c80319c
+
+    Degraded:
+      description: |
+        Справочник ограничений недоступен, проверить варианты не с чем.
+        Непроверенные альтернативы не показываются — отказ в сторону запрета
+        (`NFR-REL-03`). Сбой при этом эскалируется оператору.
+      headers:
+        Retry-After: { $ref: '#/components/headers/RetryAfter' }
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+
+  schemas:
+
+    Problem:
+      type: object
+      description: Ошибка в формате RFC 9457.
+      required: [type, title, status]
+      properties:
+        type:
+          type: string
+          format: uri
+          description: URI из реестра ошибок. Машиночитаемый код — это он.
+        title:
+          type: string
+          description: Описание типа ошибки, неизменное для одного `type`.
+        status: { type: integer, description: Код ответа HTTP. }
+        detail:
+          type: string
+          description: Что произошло в этом случае. Паспортных данных не содержит.
+        instance: { type: string, format: uri-reference }
+        trace_id:
+          type: string
+          description: Сквозной идентификатор корреляции.
+        errors:
+          type: array
+          description: Разбор по полям при ошибке валидации.
+          items:
+            type: object
+            properties:
+              pointer: { type: string, description: JSON Pointer на поле в теле запроса. }
+              detail: { type: string }
+
+    NextCursor:
+      type: [string, 'null']
+      description: Курсор следующей страницы. `null` — страница последняя.
+
+    Money:
+      type: object
+      required: [amount_minor, currency]
+      properties:
+        amount_minor:
+          type: integer
+          format: int64
+          description: Сумма в минорных единицах. Дробных типов в деньгах нет.
+        currency: { type: string, pattern: '^[A-Z]{3}$' }
+
+    Timezone:
+      type: string
+      description: Таймзона IANA. Не смещение — смещение меняется дважды в год.
+      examples: [Europe/Moscow, Asia/Tokyo]
+
+    TripState:
+      type: string
+      enum: [planned, active, completed, cancelled]
+
+    ParticipationRole:
+      type: string
+      enum: [organizer, participant]
+
+    SegmentState:
+      type: string
+      enum: [planned, replaced, cancelled, flown]
+
+    PlanItemKind:
+      type: string
+      enum: [segment, transfer, hotel_stay, activity]
+
+    PlanItemState:
+      type: string
+      description: '`needs_attention` — поставщик не подтвердил отмену или перенос (`FR-PLN-02`).'
+      enum: [ok, needs_attention, rescheduled, cancelled]
+
+    FlightStatusKind:
+      type: string
+      description: '`informational` — терминал, выход, борт: сбоя не создаёт (`FR-DET-01`).'
+      enum: [on_time, delayed, cancelled, retimed, airport_changed, informational]
+
+    FreshnessState:
+      type: string
+      enum: [fresh, stale]
+
+    DisruptionKind:
+      type: string
+      enum: [delay, cancellation, retime, airport_change, misconnect]
+
+    ImpactClass:
+      type: string
+      description: Определяет ветку обработки сбоя.
+      enum: [feasible, feasible_at_risk, infeasible]
+
+    DisruptionState:
+      type: string
+      enum: [detected, assessing, awaiting_decision, rebooking, resolved, escalated, closed]
+
+    DecisionSource:
+      type: string
+      description: Основание решения. Известно для 100 процентов решений (`NFR-OBS-01`).
+      enum: [traveller, organizer, auto_policy, operator]
+
+    AlternativeVerdict:
+      type: string
+      enum: [eligible, conditional, rejected]
+
+    CheckKind:
+      type: string
+      enum: [mct, baggage, transit_visa, timezone, fare_difference]
+
+    CheckOutcome:
+      type: string
+      enum: [pass, conditional, fail]
+
+    SearchOutcome:
+      type: string
+      enum: [options_found, no_options, constraints_unavailable]
+
+    DeliveryChannel:
+      type: string
+      enum: [push, sms, email, voice]
+
+    AutoPolicyStrategy:
+      type: string
+      description: '`no_auto` — по истечении ack-окна сбой эскалируется, а не закрывается сам.'
+      enum: [earliest_arrival, keep_plan, same_carrier, no_auto]
+
+    TripSummary:
+      type: object
+      required: [trip_id, title, state, starts_at_utc, ends_at_utc, current_plan_version, my_role]
+      properties:
+        trip_id: { type: string, format: uuid }
+        title: { type: string }
+        state: { $ref: '#/components/schemas/TripState' }
+        starts_at_utc: { type: string, format: date-time }
+        ends_at_utc: { type: string, format: date-time }
+        completed_at_utc:
+          type: [string, 'null']
+          format: date-time
+          description: Точка отсчёта срока удержания паспортных данных.
+        current_plan_version: { type: integer }
+        my_role: { $ref: '#/components/schemas/ParticipationRole' }
+        open_disruptions_count: { type: integer, description: Сбои поездки в незакрытом состоянии. }
+
+    FlightStatus:
+      type: object
+      description: Текущее состояние рейса. Производное от потока сообщений, не последнее пришедшее.
+      required: [status_kind, current_departure_utc, current_arrival_utc, event_at, ingest_at, freshness, stale_after]
+      properties:
+        status_kind: { $ref: '#/components/schemas/FlightStatusKind' }
+        current_departure_utc: { type: string, format: date-time }
+        current_arrival_utc: { type: string, format: date-time }
+        event_at:
+          type: string
+          format: date-time
+          description: Время события у провайдера. Основание для решений.
+        ingest_at:
+          type: string
+          format: date-time
+          description: Время приёма. Основание для лага и дедупликации, но не для решений.
+        source_code: { type: string, description: Источник, определивший текущее состояние. }
+        trust_rank: { type: integer, description: Ранг достоверности. При противоречии побеждает больший. }
+        freshness: { $ref: '#/components/schemas/FreshnessState' }
+        stale_after:
+          type: string
+          format: date-time
+          description: 15 минут или три интервала опроса источника, что больше (`NFR-REL-04`).
+        has_contradiction:
+          type: boolean
+          description: Источники разошлись; факт сохраняется (`FR-ING-03`).
+
+    Segment:
+      type: object
+      required: [segment_id, sequence_no, flight_key, departure_airport, arrival_airport, scheduled_departure_utc, scheduled_arrival_utc, state]
+      properties:
+        segment_id: { type: string, format: uuid }
+        sequence_no: { type: integer, description: Стыковка — пара соседних по этому номеру. }
+        flight_key:
+          type: string
+          description: Перевозчик, номер рейса и дата вылета в UTC.
+          examples: ['SU0261-2026-09-04']
+        marketing_carrier: { type: string, pattern: '^[A-Z0-9]{2}$' }
+        flight_number: { type: string }
+        departure_airport: { type: string, pattern: '^[A-Z]{3}$' }
+        arrival_airport: { type: string, pattern: '^[A-Z]{3}$' }
+        departure_timezone: { $ref: '#/components/schemas/Timezone' }
+        arrival_timezone: { $ref: '#/components/schemas/Timezone' }
+        scheduled_departure_utc: { type: string, format: date-time }
+        scheduled_arrival_utc: { type: string, format: date-time }
+        departure_terminal: { type: [string, 'null'] }
+        arrival_terminal: { type: [string, 'null'] }
+        cabin: { type: string }
+        state: { $ref: '#/components/schemas/SegmentState' }
+        replaced_by_segment_id:
+          type: [string, 'null']
+          format: uuid
+          description: Заполнено после перебронирования. Старый сегмент не удаляется.
+        flight_status: { $ref: '#/components/schemas/FlightStatus' }
+
+    Booking:
+      type: object
+      required: [booking_id, trip_id, pnr, provider_code, state, fare, is_refundable, segments]
+      properties:
+        booking_id: { type: string, format: uuid }
+        trip_id: { type: string, format: uuid }
+        participation_id: { type: string, format: uuid }
+        pnr: { type: string }
+        provider_code: { type: string }
+        state: { type: string, enum: [issued, reissued, cancelled, refunded] }
+        fare_basis: { type: string }
+        fare: { $ref: '#/components/schemas/Money' }
+        baggage_pieces: { type: integer, description: Сравнивается с нормой альтернативы (`FR-ALT-03`). }
+        baggage_weight_kg: { type: [integer, 'null'] }
+        is_refundable: { type: boolean }
+        pii_document_ref:
+          type: [string, 'null']
+          format: uuid
+          description: Ссылка в контур ПДн. Содержимого документа здесь нет.
+        pii_document_mask:
+          type: [string, 'null']
+          description: Последние четыре цифры номера.
+        segments:
+          type: array
+          items: { $ref: '#/components/schemas/Segment' }
+
+    PlanItem:
+      type: object
+      required: [plan_item_id, kind, title, timezone, is_refundable, state]
+      properties:
+        plan_item_id: { type: string, format: uuid }
+        kind: { $ref: '#/components/schemas/PlanItemKind' }
+        segment_id:
+          type: [string, 'null']
+          format: uuid
+          description: Заполнено при `kind = segment`. Времена перелёта — в сегменте.
+        supplier_code: { type: [string, 'null'] }
+        external_ref: { type: [string, 'null'] }
+        title: { type: string }
+        starts_at_utc: { type: [string, 'null'], format: date-time }
+        ends_at_utc: { type: [string, 'null'], format: date-time }
+        timezone: { $ref: '#/components/schemas/Timezone' }
+        location_code: { type: [string, 'null'] }
+        is_refundable: { type: boolean, description: Невозвратный автоматически не отменяется (`FR-PLN-03`). }
+        cancellation_deadline_utc: { type: [string, 'null'], format: date-time }
+        state: { $ref: '#/components/schemas/PlanItemState' }
+
+    TripPlan:
+      type: object
+      required: [trip_id, version_no, created_at, items]
+      properties:
+        trip_id: { type: string, format: uuid }
+        version_no: { type: integer, description: Монотонно возрастает. Значение `ETag`. }
+        created_at: { type: string, format: date-time }
+        caused_by_disruption_id:
+          type: [string, 'null']
+          format: uuid
+          description: Сбой, изменивший план. `null` у версий, созданных вручную.
+        change_summary: { type: string }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/PlanItem' }
+
+    PlanVersion:
+      type: object
+      required: [plan_version_id, version_no, created_at, change_summary]
+      properties:
+        plan_version_id: { type: string, format: uuid }
+        version_no: { type: integer }
+        created_at: { type: string, format: date-time }
+        caused_by_disruption_id: { type: [string, 'null'], format: uuid }
+        change_summary: { type: string }
+
+    PlanUpdateRequest:
+      type: object
+      required: [operations]
+      properties:
+        operations:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items:
+            type: object
+            required: [plan_item_id, action]
+            properties:
+              plan_item_id: { type: string, format: uuid }
+              action:
+                type: string
+                description: '`keep` — оставить невозвратный элемент: это ответ на запрос по `FR-PLN-03`.'
+                enum: [reschedule, cancel, keep]
+              new_starts_at_utc: { type: [string, 'null'], format: date-time }
+              new_ends_at_utc: { type: [string, 'null'], format: date-time }
+              reason: { type: [string, 'null'], maxLength: 500 }
+      examples:
+        - operations:
+            - plan_item_id: 91f5a2e3-1c44-4a77-8f2b-3e6c9a0d4b15
+              action: reschedule
+              new_starts_at_utc: '2026-09-05T02:40:00Z'
+              reason: Трансфер сдвинут вслед за новым временем прилёта
+            - plan_item_id: 4d0a7c62-9e13-4b58-8f27-6a1e3d5c0b84
+              action: keep
+              reason: Невозвратная экскурсия, путешественник решил не отменять
+
+    DisruptionImpact:
+      type: object
+      required: [impact_id, plan_item_id, kind, is_non_refundable]
+      properties:
+        impact_id: { type: string, format: uuid }
+        plan_item_id: { type: string, format: uuid }
+        kind:
+          type: string
+          enum: [connection_broken, transfer_missed, hotel_missed, activity_missed, segment_cancelled]
+        applied_mct_minutes:
+          type: [integer, 'null']
+          description: Снимок правила MCT на момент детекции. Справочник изменится, разбор пойдёт по нему.
+        is_non_refundable: { type: boolean }
+        estimated_loss:
+          oneOf:
+            - $ref: '#/components/schemas/Money'
+            - type: 'null'
+          description: Потери при отмене невозвратного элемента (`FR-IMP-02`).
+
+    Decision:
+      type: object
+      required: [decision_id, source, decided_at]
+      properties:
+        decision_id: { type: string, format: uuid }
+        source: { $ref: '#/components/schemas/DecisionSource' }
+        decided_by_participation_id:
+          type: [string, 'null']
+          format: uuid
+          description: Заполнено при основании `traveller` или `organizer`.
+        mandate_id:
+          type: [string, 'null']
+          format: uuid
+          description: Мандат, действовавший в момент выбора (`FR-GRP-02`).
+        auto_policy_id: { type: [string, 'null'], format: uuid }
+        alternative_id: { type: [string, 'null'], format: uuid }
+        reason: { type: [string, 'null'], description: Обязателен при основании `operator`. }
+        decided_at: { type: string, format: date-time }
+        applied_at: { type: [string, 'null'], format: date-time }
+
+    DisruptionSummary:
+      type: object
+      required: [disruption_id, booking_id, trip_id, kind, impact_class, state, event_at, opened_at]
+      properties:
+        disruption_id: { type: string, format: uuid }
+        booking_id: { type: string, format: uuid }
+        trip_id: { type: string, format: uuid }
+        kind: { $ref: '#/components/schemas/DisruptionKind' }
+        impact_class: { $ref: '#/components/schemas/ImpactClass' }
+        state: { $ref: '#/components/schemas/DisruptionState' }
+        event_at:
+          type: string
+          format: date-time
+          description: Время события у провайдера. Решения принимаются по нему.
+        opened_at: { type: string, format: date-time }
+        ack_deadline_at:
+          type: [string, 'null']
+          format: date-time
+          description: Отсчёт с момента сдачи уведомления в первый канал (`FR-DEC-02`).
+        closed_at: { type: [string, 'null'], format: date-time }
+        supersedes_disruption_id:
+          type: [string, 'null']
+          format: uuid
+          description: Исходный сбой, если этот открыт повторно (`FR-DET-03`).
+
+    Disruption:
+      allOf:
+        - $ref: '#/components/schemas/DisruptionSummary'
+        - type: object
+          properties:
+            segment_id: { type: string, format: uuid, description: Сбойный сегмент. }
+            flight_status: { $ref: '#/components/schemas/FlightStatus' }
+            impacts:
+              type: array
+              items: { $ref: '#/components/schemas/DisruptionImpact' }
+            affected_participations:
+              type: array
+              description: Затронутые участники поимённо (`FR-IMP-01`).
+              items:
+                type: object
+                properties:
+                  participation_id: { type: string, format: uuid }
+                  display_name: { type: string }
+                  role: { $ref: '#/components/schemas/ParticipationRole' }
+            decision:
+              oneOf:
+                - $ref: '#/components/schemas/Decision'
+                - type: 'null'
+            escalation_reason:
+              type: [string, 'null']
+              description: Почему сбой ушёл оператору (`FR-DEC-04`).
+
+    ConstraintCheck:
+      type: object
+      required: [kind, outcome, checked_at]
+      properties:
+        kind: { $ref: '#/components/schemas/CheckKind' }
+        outcome: { $ref: '#/components/schemas/CheckOutcome' }
+        reason: { type: [string, 'null'] }
+        applied_value:
+          type: [string, 'null']
+          description: 'Что сказал справочник: MCT в минутах, тип визы, норма багажа.'
+        checked_at: { type: string, format: date-time }
+
+    AlternativeSegment:
+      type: object
+      required: [sequence_no, flight_key, departure_airport, arrival_airport, departure_utc, arrival_utc]
+      properties:
+        sequence_no: { type: integer }
+        flight_key: { type: string }
+        marketing_carrier: { type: string }
+        flight_number: { type: string }
+        departure_airport: { type: string, pattern: '^[A-Z]{3}$' }
+        arrival_airport: { type: string, pattern: '^[A-Z]{3}$' }
+        departure_timezone: { $ref: '#/components/schemas/Timezone' }
+        arrival_timezone: { $ref: '#/components/schemas/Timezone' }
+        departure_utc: { type: string, format: date-time }
+        arrival_utc: { type: string, format: date-time }
+
+    Alternative:
+      type: object
+      required: [alternative_id, verdict, fare_difference, is_involuntary, baggage_pieces, valid_until, segments, checks]
+      properties:
+        alternative_id: { type: string, format: uuid }
+        rank: { type: [integer, 'null'], description: Место в ранжировании. `null` у отклонённых. }
+        verdict: { $ref: '#/components/schemas/AlternativeVerdict' }
+        fare_difference: { $ref: '#/components/schemas/Money' }
+        is_involuntary:
+          type: boolean
+          description: Вынужденное — тариф сохраняется, разница не начисляется (`FR-REB-02`).
+        baggage_pieces: { type: integer }
+        valid_until:
+          type: string
+          format: date-time
+          description: Провайдер не держит место, пока путешественник думает.
+        rejection_reason: { type: [string, 'null'] }
+        segments:
+          type: array
+          items: { $ref: '#/components/schemas/AlternativeSegment' }
+        checks:
+          type: array
+          description: Результат каждой проверки отдельно (`FR-ALT-07`). Пустым не бывает.
+          items: { $ref: '#/components/schemas/ConstraintCheck' }
+
+    AlternativesPage:
+      type: object
+      required: [items, search]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/Alternative' }
+        next_cursor: { $ref: '#/components/schemas/NextCursor' }
+        search:
+          type: object
+          required: [search_id, outcome]
+          properties:
+            search_id: { type: string, format: uuid }
+            outcome: { $ref: '#/components/schemas/SearchOutcome' }
+            horizon_hours: { type: integer }
+            providers_polled: { type: integer }
+            requested_at: { type: string, format: date-time }
+            completed_at: { type: [string, 'null'], format: date-time }
+
+    DecisionRequest:
+      type: object
+      required: [alternative_id]
+      properties:
+        alternative_id:
+          type: string
+          format: uuid
+          description: Выбранный вариант. Обязан быть годным и непросроченным.
+        on_behalf_of_participation_id:
+          type: [string, 'null']
+          format: uuid
+          description: Участие, за которое решает организатор. Требует действующего мандата.
+        accept_fare_difference:
+          oneOf:
+            - $ref: '#/components/schemas/Money'
+            - type: 'null'
+          description: Согласие на доплату. Обязательно при положительной разнице тарифа.
+        reason:
+          type: [string, 'null']
+          maxLength: 500
+          description: Обязателен, когда решение принимает оператор поддержки.
+      examples:
+        - alternative_id: c3a9f0d2-6e51-4b7d-9c88-2a1f4e7b0d63
+        - alternative_id: f5b2d491-7c60-4a38-9d15-8e3a0c7b2f46
+          on_behalf_of_participation_id: 3b8f1e05-2a76-4c93-8d41-5e7c0b2a9d63
+          accept_fare_difference: { amount_minor: 450000, currency: RUB }
+
+    AutoPolicy:
+      type: object
+      required: [scope, strategy, max_surcharge, updated_at]
+      properties:
+        auto_policy_id: { type: string, format: uuid }
+        scope: { type: string, enum: [trip, booking] }
+        strategy: { $ref: '#/components/schemas/AutoPolicyStrategy' }
+        max_surcharge: { $ref: '#/components/schemas/Money' }
+        payer_consent_at:
+          type: [string, 'null']
+          format: date-time
+          description: '`null` — согласия нет, вариант с доплатой не выбирается (`FR-DEC-03`).'
+        created_by_participation_id: { type: string, format: uuid }
+        updated_at: { type: string, format: date-time, description: Значение `ETag` этого ресурса. }
+
+    AutoPolicyRequest:
+      type: object
+      required: [strategy, max_surcharge]
+      properties:
+        strategy: { $ref: '#/components/schemas/AutoPolicyStrategy' }
+        max_surcharge: { $ref: '#/components/schemas/Money' }
+        payer_consent_at: { type: [string, 'null'], format: date-time }
+      examples:
+        - strategy: keep_plan
+          max_surcharge: { amount_minor: 500000, currency: RUB }
+          payer_consent_at: '2026-08-30T12:00:00Z'
+
+    ChannelPreference:
+      type: object
+      required: [channel, priority]
+      properties:
+        channel: { $ref: '#/components/schemas/DeliveryChannel' }
+        priority: { type: integer, minimum: 1, description: Шаг лестницы. Значения уникальны в наборе. }
+        quiet_hours_from: { type: [string, 'null'], pattern: '^\d{2}:\d{2}$' }
+        quiet_hours_to: { type: [string, 'null'], pattern: '^\d{2}:\d{2}$' }
+        quiet_hours_timezone:
+          oneOf:
+            - $ref: '#/components/schemas/Timezone'
+            - type: 'null'
+          description: Таймзона, в которой заданы тихие часы, а не место нахождения.
+
+    ChannelPreferences:
+      type: object
+      required: [items, updated_at]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ChannelPreference' }
+        updated_at: { type: string, format: date-time }
+
+    ChannelPreferencesRequest:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          minItems: 1
+          items: { $ref: '#/components/schemas/ChannelPreference' }
+      examples:
+        - items:
+            - channel: push
+              priority: 1
+            - channel: sms
+              priority: 2
+              quiet_hours_from: '23:00'
+              quiet_hours_to: '07:00'
+              quiet_hours_timezone: Europe/Moscow
+            - channel: email
+              priority: 3
+
+    TravelDocumentRequest:
+      type: object
+      description: |
+        Уходит в контур ПДн целиком. Состав полей ограничен тем, что нужно для
+        выпуска перевозки (`NFR-COMP-03`).
+      required: [traveller_id, kind, number, expires_at, birth_date, latin_name, issuing_country, consent]
+      properties:
+        traveller_id: { type: string, format: uuid }
+        booking_id:
+          type: [string, 'null']
+          format: uuid
+          description: Бронирование, к которому привязывается ссылка на документ.
+        kind: { type: string, enum: [passport, id_card] }
+        number: { type: string }
+        expires_at: { type: string, format: date }
+        birth_date: { type: string, format: date }
+        latin_name: { type: string }
+        issuing_country: { type: string, pattern: '^[A-Z]{2}$' }
+        consent:
+          type: object
+          required: [text_version, obtained_at]
+          properties:
+            text_version: { type: string }
+            obtained_at: { type: string, format: date-time }
+      examples:
+        - traveller_id: 0e9b5d13-8c47-4a20-b6f5-2d1a7c8e4b09
+          booking_id: 2d5e8f10-6b3c-4a97-8e42-1f0c7b9d3a56
+          kind: passport
+          number: '4509123456'
+          expires_at: '2031-04-18'
+          birth_date: '1998-11-02'
+          latin_name: IVAN PETROV
+          issuing_country: RU
+          consent:
+            text_version: pdn-2026-03
+            obtained_at: '2026-07-12T09:02:41Z'
+
+    TravelDocumentRef:
+      type: object
+      description: Всё, что система отдаёт наружу о документе. Реквизитов не содержит.
+      required: [document_ref, mask, kind, issuing_country, retention_due_at]
+      properties:
+        document_ref: { type: string, format: uuid }
+        mask: { type: string, description: Последние четыре цифры. Расшифровки не требует. }
+        kind: { type: string, enum: [passport, id_card] }
+        issuing_country: { type: string, pattern: '^[A-Z]{2}$' }
+        retention_due_at:
+          type: string
+          format: date-time
+          description: Дата завершения поездки плюс 30 суток. Продление поездки переносит срок.
+        loaded_at: { type: string, format: date-time }
+      examples:
+        - document_ref: 2c9f7b41-8a3d-4e15-9f60-1b8c5a7d2e04
+          mask: '•••• 4417'
+          kind: passport
+          issuing_country: RU
+          retention_due_at: '2026-10-14T00:00:00Z'
+          loaded_at: '2026-07-12T09:02:44Z'
+
+    PurgeReport:
+      type: object
+      required: [from, to, generated_at, deleted_count, checked_count, overdue_left_count]
+      properties:
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time }
+        generated_at: { type: string, format: date-time }
+        checked_count: { type: integer }
+        deleted_count: { type: integer }
+        overdue_left_count:
+          type: integer
+          description: Записи с истёкшим сроком, не удалённые прогоном. Больше нуля — расхождение.
+        runs:
+          type: array
+          items:
+            type: object
+            properties:
+              purge_run_id: { type: string, format: uuid }
+              started_at: { type: string, format: date-time }
+              finished_at: { type: [string, 'null'], format: date-time }
+              checked_count: { type: integer }
+              deleted_count: { type: integer }
+              overdue_left_count: { type: integer }
+
+    Mandate:
+      type: object
+      required: [mandate_id, granted_by_participation_id, granted_to_participation_id, granted_at]
+      properties:
+        mandate_id: { type: string, format: uuid }
+        granted_by_participation_id: { type: string, format: uuid }
+        granted_to_participation_id: { type: string, format: uuid }
+        granted_at: { type: string, format: date-time }
+        revoked_at:
+          type: [string, 'null']
+          format: date-time
+          description: '`null` — мандат действует. Интервал, а не признак.'
+
+    Participant:
+      type: object
+      required: [participation_id, traveller_id, display_name, role, joined_at]
+      properties:
+        participation_id: { type: string, format: uuid }
+        traveller_id: { type: string, format: uuid }
+        display_name: { type: string }
+        role: { $ref: '#/components/schemas/ParticipationRole' }
+        joined_at: { type: string, format: date-time }
+        left_at: { type: [string, 'null'], format: date-time }
+        mandate:
+          oneOf:
+            - $ref: '#/components/schemas/Mandate'
+            - type: 'null'
+          description: Мандат, выданный этим участником организатору, если выдан.
+
+    GroupDecisionRequest:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items:
+            type: object
+            required: [disruption_id, alternative_id]
+            properties:
+              disruption_id: { type: string, format: uuid }
+              alternative_id: { type: string, format: uuid }
+              accept_fare_difference:
+                oneOf:
+                  - $ref: '#/components/schemas/Money'
+                  - type: 'null'
+      examples:
+        - items:
+            - disruption_id: 4e2b1a90-77cd-4f31-8f0a-9c3d2b6e5a17
+              alternative_id: c3a9f0d2-6e51-4b7d-9c88-2a1f4e7b0d63
+            - disruption_id: 71c0a5d3-2e88-4b16-9a47-0d5f3c8e2b91
+              alternative_id: f5b2d491-7c60-4a38-9d15-8e3a0c7b2f46
+
+    GroupDecisionResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            required: [disruption_id, status]
+            properties:
+              disruption_id: { type: string, format: uuid }
+              status: { type: string, enum: [accepted, rejected] }
+              decision:
+                oneOf:
+                  - $ref: '#/components/schemas/Decision'
+                  - type: 'null'
+              problem:
+                oneOf:
+                  - $ref: '#/components/schemas/Problem'
+                  - type: 'null'
+                description: Заполнено при `rejected`. Причина — в формате ошибки.
+      examples:
+        - items:
+            - disruption_id: 4e2b1a90-77cd-4f31-8f0a-9c3d2b6e5a17
+              status: accepted
+              decision:
+                decision_id: 8d1f3c22-0b47-4a90-9e63-5f2a7c1d4b08
+                source: organizer
+                decided_by_participation_id: 7a4c2b81-5d09-4e63-9f18-3c6a0e5b7d24
+                mandate_id: b7c4e91a-3d20-4f68-8a15-6e0c2b9d7f43
+                alternative_id: c3a9f0d2-6e51-4b7d-9c88-2a1f4e7b0d63
+                decided_at: '2026-09-04T12:31:12Z'
+                applied_at: null
+              problem: null
+            - disruption_id: 71c0a5d3-2e88-4b16-9a47-0d5f3c8e2b91
+              status: rejected
+              decision: null
+              problem:
+                type: https://api.traveltech.example/problems/mandate-not-active
+                title: Мандат не действует на момент выбора
+                status: 403
+                trace_id: 0af7651916cd43dd8448eb211c80319c
+
+    FlightStatusPush:
+      type: object
+      required: [source_code, flight_key, status_kind, event_at]
+      properties:
+        source_code: { type: string }
+        flight_key: { type: string, examples: ['SU0261-2026-09-04'] }
+        marketing_carrier: { type: string }
+        flight_number: { type: string }
+        departure_airport: { type: string, pattern: '^[A-Z]{3}$' }
+        arrival_airport: { type: string, pattern: '^[A-Z]{3}$' }
+        status_kind: { $ref: '#/components/schemas/FlightStatusKind' }
+        event_at:
+          type: string
+          format: date-time
+          description: Время события у провайдера, UTC. Обязательно — без него сообщение не участвует в разрешении противоречий.
+        new_departure_utc: { type: [string, 'null'], format: date-time }
+        new_arrival_utc: { type: [string, 'null'], format: date-time }
+        new_departure_terminal: { type: [string, 'null'] }
+        new_arrival_terminal: { type: [string, 'null'] }
+        payload_fingerprint:
+          type: [string, 'null']
+          description: Свёртка на стороне провайдера. При отсутствии система считает свою.
+      examples:
+        - source_code: carrier-push-su
+          flight_key: SU0261-2026-09-04
+          marketing_carrier: SU
+          flight_number: '261'
+          departure_airport: SVO
+          arrival_airport: HND
+          status_kind: cancelled
+          event_at: '2026-09-04T12:12:00Z'
+
+    RebookingCallback:
+      type: object
+      required: [operation_key, state, occurred_at]
+      properties:
+        operation_key:
+          type: string
+          description: Ключ выпуска из сбоя и бронирования. Повтор с тем же ключом второй билет не выпускает.
+        state: { type: string, enum: [issued, failed] }
+        new_ticket_number: { type: [string, 'null'] }
+        failure_reason:
+          type: [string, 'null']
+          description: Отказ перевозчика. Отклонённый вариант повторно не предлагается (`FR-REB-04`).
+        fare_difference:
+          oneOf:
+            - $ref: '#/components/schemas/Money'
+            - type: 'null'
+        occurred_at: { type: string, format: date-time }
+      examples:
+        - operation_key: 4e2b1a90-2d5e8f10
+          state: issued
+          new_ticket_number: '5552401739284'
+          fare_difference: { amount_minor: 0, currency: RUB }
+          occurred_at: '2026-09-04T12:24:51Z'

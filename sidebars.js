@@ -61,6 +61,7 @@ const sidebars = {
       label: '06. API',
       items: [
         'api/events',
+        'api/sync',
         'api/async',
       ],
     },

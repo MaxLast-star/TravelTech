@@ -1,7 +1,1217 @@
 asyncapi: 3.0.0
+
 info:
   title: TravelTech IROPS Events
-  version: 0.1.0
-  description: Черновик. Заполняется на шаге 06.
-channels: {}
-operations: {}
+  version: 1.0.0
+  description: |
+    Асинхронный контракт системы: одиннадцать каналов шины событий `C-BUS`.
+    Состав каналов задан [каталогом доменных событий](/api/events) и здесь не
+    расширяется: событие, которого нет в каталоге, нельзя опубликовать.
+
+    Синхронные вызовы внешних систем — провайдер бронирования, справочник
+    ограничений, платёжный шлюз, поставщики наземных услуг — событиями не
+    являются и в этом документе отсутствуют. У них нет ключа партиционирования,
+    нет повторной доставки и нет потребителей на шине; их идемпотентность живёт
+    в [синхронном контракте](/api/rest) и держится на ключе операции.
+
+    ## Имя канала
+
+    `<домен>.<событие>.v<N>`. Версия входит в имя: несовместимое изменение схемы
+    выпускается отдельным каналом `v2`, канал `v1` живёт, пока на нём есть
+    потребители. Версии в заголовке сообщения для маршрутизации не используются —
+    поле `schema_version` в конверте существует для разбора инцидентов, а не для
+    выбора обработчика.
+
+    ## Конверт
+
+    У всех сообщений одна оболочка из восьми полей: `event_id`, `event_type`,
+    `event_at`, `ingest_at`, `partition_key`, `producer`, `trace_id`,
+    `schema_version`. Прикладная часть — в `data`.
+
+    Времён два. `event_at` — когда изменение произошло у источника, `ingest_at` —
+    когда его принял приёмник. Решения принимаются по `event_at`; разность двух
+    времён — лаг провайдера, наблюдаемая величина, характеризующая источник, а не
+    систему.
+
+    ## Гарантии доставки
+
+    **Доставка не менее одного раза.** Транзакционный outbox в `C-ORCH-STATE` и
+    `C-PLAN` гарантирует, что событие не потеряется при отказе публикующего
+    сервиса: запись состояния и запись события идут одной транзакцией, релей
+    отправляет уже зафиксированное. Обратная сторона выбора — дубли при доставке
+    неизбежны: релей не знает, дошло ли предыдущее сообщение до брокера.
+
+    **Идемпотентность потребителя обязательна.** Ключ идемпотентности — не ключ
+    партиционирования: партиционирование отвечает за порядок, идемпотентность —
+    за повтор. Ключи по каждому каналу перечислены в описании канала и сведены в
+    таблицу на [странице асинхронного API](/api/async). Обработанные ключи
+    хранит `disruption.processed_event` со сроком, превышающим окно повторной
+    доставки шины. Дедупликация выполняется до корреляции с экземпляром процесса:
+    иначе повторный `disruption.detected.v1` сдвинул бы таймер ack-окна.
+
+    **Порядок гарантируется только внутри партиции**, то есть внутри одного
+    значения ключа. Между разными значениями ключа порядка нет и не
+    предполагается: два сбоя одного путешественника обрабатываются параллельно.
+
+    **Сообщение, пришедшее не по порядку, сохраняется, но состояния не меняет.**
+    Правило единое: если `event_at` сообщения раньше, чем `event_at` текущего
+    состояния, а ранг источника не выше, сообщение записывается с `applied =
+    false` и на этом всё. Отбрасывать такое сообщение нельзя — по нему считается
+    полнота приёма и разбираются расхождения между источниками. При противоречии
+    текущим становится статус источника с высшим рангом достоверности, при равном
+    ранге — с более поздним `event_at`; факт противоречия сохраняется.
+
+    **Очередь недоставленных.** Сообщение, которое потребитель не смог обработать
+    после трёх попыток, уходит в канал `<имя канала>.dlq` с исходным конвертом и
+    причиной отказа. Разбор ручной: автоматического возврата из очереди нет —
+    сообщение, отравившее обработчик один раз, отравит его и на повторе. Два
+    канала очереди не имеют, и это осознанно: у сырого статуса поток слишком
+    велик, неразбираемое сообщение направляется оператору поддержки
+    (`FR-ING-01`); расхождение по срокам удержания ПДн — само по себе алерт, и
+    его нельзя откладывать до ручного разбора очереди.
+
+    **Эволюция схемы.** Совместимость назад в пределах мажорной версии канала:
+    разрешено добавлять необязательные поля и новые значения перечислений,
+    запрещено удалять и переименовывать поля, менять тип и сужать перечисление.
+    Потребитель обязан игнорировать незнакомые поля. Несовместимое изменение —
+    новый канал `v2` и период двойной публикации до отключения последнего
+    потребителя `v1`.
+
+    ## Паспортные данные
+
+    Ни один канал не переносит реквизиты паспортного документа — ни в открытом
+    виде, ни в зашифрованном (`NFR-SEC-03`). Максимум, что попадает в сообщение,
+    — идентификатор путешественника. Событие `pii.purge.mismatch.v1` несёт счётчик
+    расхождения и идентификатор прогона, но не список записей.
+
+    ## Допущения
+
+    Сроки хранения каналов и наличие очереди недоставленных в каталоге событий не
+    заданы: значения ниже приняты агентом E как допущение и подлежат уточнению
+    при эксплуатации. Число партиций — следствие потока 2000 сообщений в секунду
+    из `NFR-SCAL-01`, тоже допущение.
+
+defaultContentType: application/json
+
+servers:
+  bus:
+    host: kafka.traveltech.example:9093
+    protocol: kafka-secure
+    protocolVersion: '3.7'
+    description: |
+      Шина событий `C-BUS`. Три реплики на канал, минимальное число синхронных
+      реплик — две: подтверждение продюсеру выдаётся только после записи на
+      большинство реплик, иначе гарантия «не менее одного раза» держалась бы на
+      одной машине.
+    security:
+      - $ref: '#/components/securitySchemes/mtls'
+
+channels:
+
+  flightStatusReceived:
+    address: flight.status.received.v1
+    title: Сырой статус рейса
+    description: |
+      Статус сегмента от провайдера, перевозчика или из разбора служебного
+      письма — до дедупликации и до оценки достоверности.
+
+      Продюсер — `C-INGEST`. Потребитель — `C-DETECT`.
+
+      **Ключ партиционирования: `flight_key`.** Статус принадлежит рейсу, а один
+      рейс — это сотни бронирований. Ключ по бронированию заставил бы размножать
+      одно событие на все затронутые брони ещё до дедупликации, а порядок нужен
+      ровно между статусами одного рейса: отмена, пришедшая раньше задержки по
+      `event_at`, не должна обгонять её в обработке.
+
+      **Ключ идемпотентности:** `source_code`, `flight_key`, `event_at`,
+      `status_kind`. Дубль отбрасывается. Тот же статус от источника с более
+      высоким рангом достоверности обновляет состояние рейса, но нового сбоя не
+      открывает.
+
+      **Очереди недоставленных нет.** Сообщение, из которого статус извлечь не
+      удалось, направляется оператору поддержки (`FR-ING-01`): на потоке 2000
+      сообщений в секунду очередь недоставленных наполнилась бы мусором
+      быстрее, чем её успели бы разобрать.
+    messages:
+      flightStatusReceived:
+        $ref: '#/components/messages/FlightStatusReceived'
+    bindings:
+      kafka:
+        topic: flight.status.received.v1
+        partitions: 24
+        replicas: 3
+        topicConfiguration:
+          cleanup.policy: [delete]
+          retention.ms: 604800000
+    tags:
+      - name: Приём и детекция
+
+  disruptionDetected:
+    address: disruption.detected.v1
+    title: Сбой открыт
+    description: |
+      Открыт сбой по бронированию: тип, класс влияния, ссылка на исходное
+      сообщение о статусе. Запускает экземпляр процесса `P-01` (`P-01.S1`).
+
+      Продюсер — `C-DETECT`. Потребитель — `C-ORCH`.
+
+      **Ключ партиционирования: `booking_id`.** `NFR-SCAL-02` требует строгого
+      порядка в пределах бронирования, и это самое узкое место: два конкурирующих
+      статуса по одной броне обязаны попасть в одну партицию, иначе `FR-DET-03`
+      — обновить открытый сбой, а не создать второй — выполняется как гонка.
+      `disruption_id` в момент публикации ещё не существует, поэтому ключ именно
+      `booking_id`.
+
+      **Ключ идемпотентности:** `disruption_id`. Повтор не создаёт второй
+      экземпляр процесса: корреляция по `booking_id` попадает в уже запущенный.
+
+      Повторный сбой отдельного канала не имеет: это то же событие с заполненным
+      `supersedes_disruption_id` (`FR-DET-03`).
+    messages:
+      disruptionDetected:
+        $ref: '#/components/messages/DisruptionDetected'
+    bindings:
+      kafka:
+        topic: disruption.detected.v1
+        partitions: 12
+        replicas: 3
+        topicConfiguration:
+          cleanup.policy: [delete]
+          retention.ms: 2592000000
+    tags:
+      - name: Приём и детекция
+
+  disruptionNotified:
+    address: disruption.notified.v1
+    title: Путешественник проинформирован
+    description: |
+      План исполним, вариантов не предлагается — путешественник информируется, и
+      сбой закрывается (`P-01.E1`).
+
+      Продюсер — `C-ORCH`. Потребитель — `C-NOTIFY`.
+
+      **Ключ партиционирования: `disruption_id`.** Вся переписка по одному сбою
+      обязана прийти в порядке публикации, иначе путешественник получит
+      напоминание раньше запроса.
+
+      **Ключ идемпотентности:** `notification_id`. Повторная публикация не
+      порождает второе сообщение человеку: по одному сбою активно не более одного
+      уведомления, новое заменяет предыдущее (`FR-NTF-01`).
+    messages:
+      disruptionNotified:
+        $ref: '#/components/messages/NotificationRequested'
+    bindings:
+      kafka:
+        topic: disruption.notified.v1
+        partitions: 12
+        replicas: 3
+        topicConfiguration:
+          cleanup.policy: [delete]
+          retention.ms: 2592000000
+    tags:
+      - name: Уведомление и решение
+
+  decisionRequested:
+    address: decision.requested.v1
+    title: Запрос решения
+    description: |
+      Запрос выбора альтернативы ответственному за бронирование: перечень годных
+      вариантов и срок ответа (`P-01.M2`, `FR-NTF-03`).
+
+      Продюсер — `C-ORCH`. Потребитель — `C-NOTIFY`.
+
+      **Ключ партиционирования: `disruption_id`.**
+      **Ключ идемпотентности:** `notification_id`.
+
+      Отсчёт ack-окна начинается не с публикации этого события, а с момента сдачи
+      уведомления в первый канал лестницы (`FR-DEC-02`): между публикацией и
+      сдачей лежит работа `C-NOTIFY`, и относить её к сроку ответа человека
+      нельзя.
+    messages:
+      decisionRequested:
+        $ref: '#/components/messages/DecisionRequested'
+    bindings:
+      kafka:
+        topic: decision.requested.v1
+        partitions: 12
+        replicas: 3
+        topicConfiguration:
+          cleanup.policy: [delete]
+          retention.ms: 2592000000
+    tags:
+      - name: Уведомление и решение
+
+  decisionReminded:
+    address: decision.reminded.v1
+    title: Напоминание
+    description: |
+      Ответа нет отведённый шагу срок — повтор следующим каналом лестницы
+      (`P-01.E4`, `FR-NTF-02`).
+
+      Продюсер — `C-ORCH`. Потребитель — `C-NOTIFY`.
+
+      **Ключ партиционирования: `disruption_id`.**
+      **Ключ идемпотентности:** `notification_id`.
+
+      Напоминание не продлевает ack-окно: лестница каналов и срок ответа —
+      независимые таймеры, и переход к следующему каналу не даёт человеку
+      лишнего времени на решение.
+    messages:
+      decisionReminded:
+        $ref: '#/components/messages/DecisionReminded'
+    bindings:
+      kafka:
+        topic: decision.reminded.v1
+        partitions: 12
+        replicas: 3
+        topicConfiguration:
+          cleanup.policy: [delete]
+          retention.ms: 2592000000
+    tags:
+      - name: Уведомление и решение
+
+  notificationDeliveryReported:
+    address: notification.delivery.reported.v1
+    title: Статус доставки уведомления
+    description: |
+      Статус доставки от провайдера канала. Факт отправки подтверждением не
+      считается: переход к следующему каналу лестницы происходит по этому
+      событию или по его отсутствию за отведённый срок (`FR-NTF-02`).
+
+      Продюсер — `C-NOTIFY`. Потребитель — `C-ORCH`.
+
+      **Ключ партиционирования: `notification_id`.** Порядок значим внутри одного
+      уведомления: попытки по каналам лестницы идут последовательно, и статусы
+      разных уведомлений между собой не связаны.
+
+      **Ключ идемпотентности:** `notification_id`, `channel`, `status`. Последний
+      статус по каналу выигрывает, история попыток сохраняется.
+    messages:
+      notificationDeliveryReported:
+        $ref: '#/components/messages/NotificationDeliveryReported'
+    bindings:
+      kafka:
+        topic: notification.delivery.reported.v1
+        partitions: 12
+        replicas: 3
+        topicConfiguration:
+          cleanup.policy: [delete]
+          retention.ms: 604800000
+    tags:
+      - name: Уведомление и решение
+
+  decisionSubmitted:
+    address: decision.submitted.v1
+    title: Решение принято человеком
+    description: |
+      Выбор альтернативы путешественником или организатором с действующим
+      мандатом. Корреляция в движке по `disruption_id` (`P-01.T3`, `FR-DEC-01`).
+
+      Продюсер — `C-API`. Потребитель — `C-ORCH`.
+
+      **Ключ партиционирования: `disruption_id`.**
+
+      **Ключ идемпотентности:** `disruption_id`, `decision_id`. Первый выигрывает.
+      Ответ, поступивший после закрытия ack-окна, применённое решение не отменяет:
+      система сообщает о принятом и предлагает начать новый выбор (`FR-DEC-05`).
+    messages:
+      decisionSubmitted:
+        $ref: '#/components/messages/DecisionSubmitted'
+    bindings:
+      kafka:
+        topic: decision.submitted.v1
+        partitions: 12
+        replicas: 3
+        topicConfiguration:
+          cleanup.policy: [delete]
+          retention.ms: 2592000000
+    tags:
+      - name: Уведомление и решение
+
+  disruptionResolved:
+    address: disruption.resolved.v1
+    title: Сбой закрыт
+    description: |
+      Решение применено, билет выпущен, план обновлён (`P-01.M3`).
+
+      Продюсер — `C-ORCH`. Потребители — `C-NOTIFY` и `C-PLAN`.
+
+      **Ключ партиционирования: `disruption_id`.**
+      **Ключ идемпотентности:** `notification_id`.
+
+      Событие несёт основание решения (`NFR-OBS-01`): без него доля
+      авто-разрешённых сбоев на дашборде не считается, а карточка сбоя не может
+      показать, почему решение принято именно такое (`FR-NTF-04`).
+    messages:
+      disruptionResolved:
+        $ref: '#/components/messages/DisruptionResolved'
+    bindings:
+      kafka:
+        topic: disruption.resolved.v1
+        partitions: 12
+        replicas: 3
+        topicConfiguration:
+          cleanup.policy: [delete]
+          retention.ms: 2592000000
+    tags:
+      - name: Уведомление и решение
+
+  planUpdated:
+    address: plan.updated.v1
+    title: План поездки изменён
+    description: |
+      Изменение опубликовано участникам, которых оно затрагивает. Несёт номер
+      версии плана (`FR-PLN-01`, `FR-NTF-05`).
+
+      Продюсер — `C-PLAN`. Потребители — `C-NOTIFY` и `C-WEB` через `C-API`.
+
+      **Ключ партиционирования: `trip_id`.** Групповая поездка обновляется как
+      целое, и порядок версий плана значим: появись у канала второй ключ, номер
+      версии перестал бы быть монотонным для потребителя.
+
+      **Ключ идемпотентности:** `trip_id`, `plan_version`. Версия не выше текущей
+      игнорируется — это же правило закрывает и повтор, и обгон.
+    messages:
+      planUpdated:
+        $ref: '#/components/messages/PlanUpdated'
+    bindings:
+      kafka:
+        topic: plan.updated.v1
+        partitions: 12
+        replicas: 3
+        topicConfiguration:
+          cleanup.policy: [delete]
+          retention.ms: 2592000000
+    tags:
+      - name: План поездки
+
+  tripCompleted:
+    address: trip.completed.v1
+    title: Поездка завершена
+    description: |
+      Последний сегмент выполнен. Запускает отсчёт срока удержания паспортных
+      данных (`P-04.S1`).
+
+      Продюсер — `C-PLAN`. Потребитель — `C-RETENT`.
+
+      **Ключ партиционирования: `trip_id`.**
+
+      **Ключ идемпотентности:** `trip_id`. Повтор не сдвигает уже рассчитанный
+      срок удержания: срок хранится на записи документа, а не пересчитывается при
+      каждом сообщении, иначе повторная доставка продлевала бы хранение
+      паспортных данных — ровно то, что запрещает условие кейса.
+
+      Срок хранения канала — год: доказательство того, когда именно поездка
+      завершилась, нужно комплаенсу дольше, чем живёт сам документ.
+    messages:
+      tripCompleted:
+        $ref: '#/components/messages/TripCompleted'
+    bindings:
+      kafka:
+        topic: trip.completed.v1
+        partitions: 12
+        replicas: 3
+        topicConfiguration:
+          cleanup.policy: [delete]
+          retention.ms: 31536000000
+    tags:
+      - name: План поездки
+
+  piiPurgeMismatch:
+    address: pii.purge.mismatch.v1
+    title: Расхождение по сроку удержания ПДн
+    description: |
+      После прогона удаления осталась запись с истёкшим сроком удержания. Алерт в
+      наблюдаемость (`P-04.M1`, `NFR-COMP-01`).
+
+      Продюсер — `C-RETENT`. Потребитель — дежурный через систему наблюдаемости.
+
+      **Ключ партиционирования: `traveller_id`.**
+
+      **Ключ идемпотентности:** `traveller_id`, `purge_run_id`. Алерт по одному
+      прогону поднимается один раз.
+
+      **Очереди недоставленных нет.** Сообщение о нарушении срока хранения
+      персональных данных не откладывается до ручного разбора очереди: если его
+      не удалось обработать, поднимается алерт на сам факт необработки.
+
+      Реквизитов документов сообщение не содержит — только счётчик и
+      идентификатор прогона. Список записей смотрят в контуре ПДн, по правам
+      доступа контура.
+    messages:
+      piiPurgeMismatch:
+        $ref: '#/components/messages/PiiPurgeMismatch'
+    bindings:
+      kafka:
+        topic: pii.purge.mismatch.v1
+        partitions: 3
+        replicas: 3
+        topicConfiguration:
+          cleanup.policy: [delete]
+          retention.ms: 31536000000
+    tags:
+      - name: Паспортные данные
+
+operations:
+
+  publishFlightStatusReceived:
+    action: send
+    title: Опубликовать сырой статус
+    summary: '`C-INGEST` публикует нормализованный статус сегмента.'
+    channel:
+      $ref: '#/channels/flightStatusReceived'
+
+  consumeFlightStatusReceived:
+    action: receive
+    title: Обработать сырой статус
+    summary: '`C-DETECT` дедуплицирует, разрешает противоречия и пересчитывает состояние рейса.'
+    channel:
+      $ref: '#/channels/flightStatusReceived'
+
+  publishDisruptionDetected:
+    action: send
+    title: Опубликовать открытие сбоя
+    summary: '`C-DETECT` публикует факт сбоя по бронированию.'
+    channel:
+      $ref: '#/channels/disruptionDetected'
+
+  consumeDisruptionDetected:
+    action: receive
+    title: Запустить обработку сбоя
+    summary: '`C-ORCH` запускает экземпляр `P-01` или дописывает открытый сбой.'
+    channel:
+      $ref: '#/channels/disruptionDetected'
+
+  publishDisruptionNotified:
+    action: send
+    title: Опубликовать информирование
+    summary: '`C-ORCH` сообщает, что план исполним и вариантов не предлагается.'
+    channel:
+      $ref: '#/channels/disruptionNotified'
+
+  consumeDisruptionNotified:
+    action: receive
+    title: Доставить информирование
+    summary: '`C-NOTIFY` ведёт лестницу каналов.'
+    channel:
+      $ref: '#/channels/disruptionNotified'
+
+  publishDecisionRequested:
+    action: send
+    title: Запросить решение
+    summary: '`C-ORCH` публикует запрос выбора с перечнем годных вариантов.'
+    channel:
+      $ref: '#/channels/decisionRequested'
+
+  consumeDecisionRequested:
+    action: receive
+    title: Доставить запрос решения
+    summary: '`C-NOTIFY` доставляет запрос и сообщает время сдачи в первый канал.'
+    channel:
+      $ref: '#/channels/decisionRequested'
+
+  publishDecisionReminded:
+    action: send
+    title: Опубликовать напоминание
+    summary: '`C-ORCH` публикует повтор по следующему каналу лестницы.'
+    channel:
+      $ref: '#/channels/decisionReminded'
+
+  consumeDecisionReminded:
+    action: receive
+    title: Доставить напоминание
+    summary: '`C-NOTIFY` доставляет напоминание следующим каналом.'
+    channel:
+      $ref: '#/channels/decisionReminded'
+
+  publishNotificationDeliveryReported:
+    action: send
+    title: Опубликовать статус доставки
+    summary: '`C-NOTIFY` публикует статус, полученный от провайдера канала.'
+    channel:
+      $ref: '#/channels/notificationDeliveryReported'
+
+  consumeNotificationDeliveryReported:
+    action: receive
+    title: Учесть статус доставки
+    summary: '`C-ORCH` продвигает лестницу и открывает ack-окно по факту сдачи.'
+    channel:
+      $ref: '#/channels/notificationDeliveryReported'
+
+  publishDecisionSubmitted:
+    action: send
+    title: Опубликовать решение человека
+    summary: '`C-API` публикует выбор путешественника или организатора.'
+    channel:
+      $ref: '#/channels/decisionSubmitted'
+
+  consumeDecisionSubmitted:
+    action: receive
+    title: Применить решение
+    summary: '`C-ORCH` коррелирует решение с экземпляром процесса и запускает `P-03`.'
+    channel:
+      $ref: '#/channels/decisionSubmitted'
+
+  publishDisruptionResolved:
+    action: send
+    title: Опубликовать закрытие сбоя
+    summary: '`C-ORCH` публикует применённое решение и его основание.'
+    channel:
+      $ref: '#/channels/disruptionResolved'
+
+  consumeDisruptionResolved:
+    action: receive
+    title: Сообщить о закрытии сбоя
+    summary: '`C-NOTIFY` уведомляет затронутых, `C-PLAN` фиксирует изменение маршрута.'
+    channel:
+      $ref: '#/channels/disruptionResolved'
+
+  publishPlanUpdated:
+    action: send
+    title: Опубликовать новую версию плана
+    summary: '`C-PLAN` публикует изменение с номером версии.'
+    channel:
+      $ref: '#/channels/planUpdated'
+
+  consumePlanUpdated:
+    action: receive
+    title: Разослать изменение плана
+    summary: '`C-NOTIFY` уведомляет тех участников, кого изменение затрагивает.'
+    channel:
+      $ref: '#/channels/planUpdated'
+
+  publishTripCompleted:
+    action: send
+    title: Опубликовать завершение поездки
+    summary: '`C-PLAN` публикует факт выполнения последнего сегмента.'
+    channel:
+      $ref: '#/channels/tripCompleted'
+
+  consumeTripCompleted:
+    action: receive
+    title: Рассчитать срок удержания ПДн
+    summary: '`C-RETENT` рассчитывает или переносит срок удержания паспортных данных.'
+    channel:
+      $ref: '#/channels/tripCompleted'
+
+  publishPiiPurgeMismatch:
+    action: send
+    title: Опубликовать расхождение по удержанию
+    summary: '`C-RETENT` публикует факт незакрытого срока удержания.'
+    channel:
+      $ref: '#/channels/piiPurgeMismatch'
+
+  consumePiiPurgeMismatch:
+    action: receive
+    title: Поднять алерт по удержанию
+    summary: Система наблюдаемости поднимает алерт дежурному.
+    channel:
+      $ref: '#/channels/piiPurgeMismatch'
+
+components:
+
+  securitySchemes:
+    mtls:
+      type: X509
+      description: Взаимная аутентификация по сертификатам между сервисами и брокером.
+
+  messageTraits:
+    commonEnvelope:
+      headers:
+        type: object
+        properties:
+          content-type:
+            type: string
+            const: application/json
+      correlationId:
+        location: $message.payload#/trace_id
+        description: Сквозной идентификатор корреляции.
+      contentType: application/json
+
+  schemas:
+
+    Envelope:
+      type: object
+      description: Оболочка, общая для всех сообщений шины.
+      required: [event_id, event_type, event_at, ingest_at, partition_key, producer, trace_id, schema_version]
+      properties:
+        event_id:
+          type: string
+          format: uuid
+          description: Идентификатор сообщения. При повторной доставке не меняется.
+        event_type:
+          type: string
+          description: Имя события вместе с версией.
+          examples: [disruption.detected.v1]
+        event_at:
+          type: string
+          format: date-time
+          description: Время события у источника, UTC. Основание для решений.
+        ingest_at:
+          type: string
+          format: date-time
+          description: Время приёма, UTC. Основание для измерения лага и дедупликации.
+        partition_key:
+          type: string
+          description: Значение ключа партиционирования канала. Дублируется в конверте для разбора.
+        producer:
+          type: string
+          description: Контейнер-продюсер.
+          examples: [C-DETECT]
+        trace_id:
+          type: string
+          description: Сквозной идентификатор корреляции.
+        schema_version:
+          type: integer
+          description: Минорная версия схемы внутри мажорной версии канала.
+          minimum: 1
+
+    Money:
+      type: object
+      required: [amount_minor, currency]
+      properties:
+        amount_minor:
+          type: integer
+          format: int64
+        currency:
+          type: string
+          pattern: '^[A-Z]{3}$'
+
+    FlightStatusKind:
+      type: string
+      enum: [on_time, delayed, cancelled, retimed, airport_changed, informational]
+
+    DisruptionKind:
+      type: string
+      enum: [delay, cancellation, retime, airport_change, misconnect]
+
+    ImpactClass:
+      type: string
+      enum: [feasible, feasible_at_risk, infeasible]
+
+    DecisionSource:
+      type: string
+      enum: [traveller, organizer, auto_policy, operator]
+
+    DeliveryChannel:
+      type: string
+      enum: [push, sms, email, voice]
+
+    DeliveryState:
+      type: string
+      enum: [sent, delivered, read, failed]
+
+    NotificationKind:
+      type: string
+      enum: [disruption_notice, decision_request, reminder, resolution_notice]
+
+    FlightStatusReceivedPayload:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          required: [data]
+          properties:
+            data:
+              type: object
+              required: [source_code, trust_rank, flight_key, status_kind]
+              properties:
+                source_code:
+                  type: string
+                trust_rank:
+                  type: integer
+                  description: Ранг достоверности источника. При противоречии побеждает больший.
+                flight_key:
+                  type: string
+                  examples: ['SU1234-2026-09-05']
+                marketing_carrier:
+                  type: string
+                flight_number:
+                  type: string
+                departure_airport:
+                  type: string
+                arrival_airport:
+                  type: string
+                status_kind:
+                  $ref: '#/components/schemas/FlightStatusKind'
+                new_departure_utc:
+                  type: [string, 'null']
+                  format: date-time
+                new_arrival_utc:
+                  type: [string, 'null']
+                  format: date-time
+                new_departure_terminal:
+                  type: [string, 'null']
+                new_arrival_terminal:
+                  type: [string, 'null']
+                payload_fingerprint:
+                  type: string
+                  description: Свёртка содержания. Ловит повторную доставку одного и того же сообщения.
+
+    DisruptionDetectedPayload:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          required: [data]
+          properties:
+            data:
+              type: object
+              required: [disruption_id, booking_id, trip_id, kind, impact_class, source_event_id]
+              properties:
+                disruption_id:
+                  type: string
+                  format: uuid
+                booking_id:
+                  type: string
+                  format: uuid
+                trip_id:
+                  type: string
+                  format: uuid
+                segment_id:
+                  type: string
+                  format: uuid
+                kind:
+                  $ref: '#/components/schemas/DisruptionKind'
+                impact_class:
+                  $ref: '#/components/schemas/ImpactClass'
+                source_event_id:
+                  type: string
+                  format: uuid
+                  description: Сообщение о статусе, открывшее сбой.
+                applied_mct_minutes:
+                  type: [integer, 'null']
+                  description: Значение MCT, действовавшее в момент детекции misconnect.
+                supersedes_disruption_id:
+                  type: [string, 'null']
+                  format: uuid
+                  description: Исходный сбой, если этот открыт повторно после применённого решения.
+
+    NotificationRequestPayload:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          required: [data]
+          properties:
+            data:
+              type: object
+              required: [notification_id, disruption_id, participation_id, kind]
+              properties:
+                notification_id:
+                  type: string
+                  format: uuid
+                  description: Ключ идемпотентности потребителя.
+                disruption_id:
+                  type: string
+                  format: uuid
+                participation_id:
+                  type: string
+                  format: uuid
+                kind:
+                  $ref: '#/components/schemas/NotificationKind'
+                impact_class:
+                  $ref: '#/components/schemas/ImpactClass'
+                supersedes_notification_id:
+                  type: [string, 'null']
+                  format: uuid
+                respond_by:
+                  type: [string, 'null']
+                  format: date-time
+                  description: Срок ответа. Показывается в тексте уведомления.
+                ladder_step:
+                  type: [integer, 'null']
+                  description: Шаг лестницы каналов. Заполнен у напоминания.
+                affected_plan_item_ids:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+                alternatives:
+                  type: array
+                  description: Годные варианты. Заполнено только у запроса решения.
+                  items:
+                    type: object
+                    properties:
+                      alternative_id:
+                        type: string
+                        format: uuid
+                      rank:
+                        type: integer
+                      fare_difference:
+                        $ref: '#/components/schemas/Money'
+                      is_involuntary:
+                        type: boolean
+                      valid_until:
+                        type: string
+                        format: date-time
+
+    NotificationDeliveryReportedPayload:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          required: [data]
+          properties:
+            data:
+              type: object
+              required: [notification_id, channel, ladder_step, status]
+              properties:
+                notification_id:
+                  type: string
+                  format: uuid
+                channel:
+                  $ref: '#/components/schemas/DeliveryChannel'
+                ladder_step:
+                  type: integer
+                status:
+                  $ref: '#/components/schemas/DeliveryState'
+                sent_at:
+                  type: string
+                  format: date-time
+                  description: Сдача в канал. От неё отсчитывается ack-окно, если это первый шаг.
+                confirmed_at:
+                  type: [string, 'null']
+                  format: date-time
+                  description: Подтверждение провайдера канала. Факт отправки подтверждением не считается.
+                error_code:
+                  type: [string, 'null']
+
+    DecisionSubmittedPayload:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          required: [data]
+          properties:
+            data:
+              type: object
+              required: [decision_id, disruption_id, source, alternative_id, decided_at]
+              properties:
+                decision_id:
+                  type: string
+                  format: uuid
+                disruption_id:
+                  type: string
+                  format: uuid
+                source:
+                  $ref: '#/components/schemas/DecisionSource'
+                decided_by_participation_id:
+                  type: [string, 'null']
+                  format: uuid
+                on_behalf_of_participation_id:
+                  type: [string, 'null']
+                  format: uuid
+                mandate_id:
+                  type: [string, 'null']
+                  format: uuid
+                  description: Мандат, действовавший в момент выбора.
+                alternative_id:
+                  type: string
+                  format: uuid
+                accepted_fare_difference:
+                  oneOf:
+                    - $ref: '#/components/schemas/Money'
+                    - type: 'null'
+                decided_at:
+                  type: string
+                  format: date-time
+
+    DisruptionResolvedPayload:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          required: [data]
+          properties:
+            data:
+              type: object
+              required: [disruption_id, booking_id, trip_id, notification_id, decision_source, resolved_at]
+              properties:
+                disruption_id:
+                  type: string
+                  format: uuid
+                booking_id:
+                  type: string
+                  format: uuid
+                trip_id:
+                  type: string
+                  format: uuid
+                notification_id:
+                  type: string
+                  format: uuid
+                decision_source:
+                  $ref: '#/components/schemas/DecisionSource'
+                decision_reason:
+                  type: [string, 'null']
+                  description: Обязателен, когда решение принял оператор поддержки.
+                rebooking_id:
+                  type: [string, 'null']
+                  format: uuid
+                new_ticket_number:
+                  type: [string, 'null']
+                fare_difference:
+                  oneOf:
+                    - $ref: '#/components/schemas/Money'
+                    - type: 'null'
+                refund:
+                  oneOf:
+                    - $ref: '#/components/schemas/Money'
+                    - type: 'null'
+                plan_version:
+                  type: [integer, 'null']
+                  description: Версия плана, зафиксировавшая изменение.
+                resolved_at:
+                  type: string
+                  format: date-time
+
+    PlanUpdatedPayload:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          required: [data]
+          properties:
+            data:
+              type: object
+              required: [trip_id, plan_version, change_summary, affected_participation_ids]
+              properties:
+                trip_id:
+                  type: string
+                  format: uuid
+                plan_version:
+                  type: integer
+                  description: Монотонно возрастает. Версия не выше текущей игнорируется потребителем.
+                caused_by_disruption_id:
+                  type: [string, 'null']
+                  format: uuid
+                change_summary:
+                  type: string
+                affected_participation_ids:
+                  type: array
+                  description: Кого затрагивает изменение. Рассылка идёт только им (`FR-NTF-05`).
+                  items:
+                    type: string
+                    format: uuid
+                changed_plan_item_ids:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+                items_needing_attention:
+                  type: array
+                  description: Элементы, отмену или перенос которых поставщик не подтвердил.
+                  items:
+                    type: string
+                    format: uuid
+
+    TripCompletedPayload:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          required: [data]
+          properties:
+            data:
+              type: object
+              required: [trip_id, completed_at_utc, traveller_ids]
+              properties:
+                trip_id:
+                  type: string
+                  format: uuid
+                completed_at_utc:
+                  type: string
+                  format: date-time
+                  description: Точка отсчёта срока удержания паспортных данных.
+                traveller_ids:
+                  type: array
+                  description: Чьи документы попадают под расчёт срока. Реквизитов нет.
+                  items:
+                    type: string
+                    format: uuid
+
+    PiiPurgeMismatchPayload:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          required: [data]
+          properties:
+            data:
+              type: object
+              required: [purge_run_id, traveller_id, overdue_left_count, checked_at]
+              properties:
+                purge_run_id:
+                  type: string
+                  format: uuid
+                traveller_id:
+                  type: string
+                  format: uuid
+                overdue_left_count:
+                  type: integer
+                  minimum: 1
+                  description: Записи с истёкшим сроком, не удалённые прогоном.
+                oldest_retention_due_at:
+                  type: string
+                  format: date-time
+                  description: Самый давно истёкший срок в прогоне. Мера тяжести расхождения.
+                checked_at:
+                  type: string
+                  format: date-time
+
+  messages:
+
+    FlightStatusReceived:
+      name: FlightStatusReceived
+      title: Сырой статус рейса
+      summary: Статус сегмента от источника до дедупликации и оценки достоверности.
+      traits:
+        - $ref: '#/components/messageTraits/commonEnvelope'
+      payload:
+        $ref: '#/components/schemas/FlightStatusReceivedPayload'
+      bindings:
+        kafka:
+          key:
+            type: string
+            description: '`flight_key` — перевозчик, номер рейса и дата вылета в UTC.'
+
+    DisruptionDetected:
+      name: DisruptionDetected
+      title: Сбой открыт
+      summary: Открыт сбой по бронированию, запускается P-01.
+      traits:
+        - $ref: '#/components/messageTraits/commonEnvelope'
+      payload:
+        $ref: '#/components/schemas/DisruptionDetectedPayload'
+      bindings:
+        kafka:
+          key:
+            type: string
+            format: uuid
+            description: '`booking_id` — строгий порядок в пределах бронирования (`NFR-SCAL-02`).'
+
+    NotificationRequested:
+      name: NotificationRequested
+      title: Информирование о сбое
+      summary: План исполним, вариантов не предлагается.
+      traits:
+        - $ref: '#/components/messageTraits/commonEnvelope'
+      payload:
+        $ref: '#/components/schemas/NotificationRequestPayload'
+      bindings:
+        kafka:
+          key:
+            type: string
+            format: uuid
+            description: '`disruption_id`.'
+
+    DecisionRequested:
+      name: DecisionRequested
+      title: Запрос решения
+      summary: Перечень годных вариантов и срок ответа.
+      traits:
+        - $ref: '#/components/messageTraits/commonEnvelope'
+      payload:
+        $ref: '#/components/schemas/NotificationRequestPayload'
+      bindings:
+        kafka:
+          key:
+            type: string
+            format: uuid
+            description: '`disruption_id`.'
+
+    DecisionReminded:
+      name: DecisionReminded
+      title: Напоминание
+      summary: Повтор следующим каналом лестницы.
+      traits:
+        - $ref: '#/components/messageTraits/commonEnvelope'
+      payload:
+        $ref: '#/components/schemas/NotificationRequestPayload'
+      bindings:
+        kafka:
+          key:
+            type: string
+            format: uuid
+            description: '`disruption_id`.'
+
+    NotificationDeliveryReported:
+      name: NotificationDeliveryReported
+      title: Статус доставки уведомления
+      summary: Подтверждение или отказ провайдера канала.
+      traits:
+        - $ref: '#/components/messageTraits/commonEnvelope'
+      payload:
+        $ref: '#/components/schemas/NotificationDeliveryReportedPayload'
+      bindings:
+        kafka:
+          key:
+            type: string
+            format: uuid
+            description: '`notification_id`.'
+
+    DecisionSubmitted:
+      name: DecisionSubmitted
+      title: Решение человека
+      summary: Выбор путешественника или организатора с действующим мандатом.
+      traits:
+        - $ref: '#/components/messageTraits/commonEnvelope'
+      payload:
+        $ref: '#/components/schemas/DecisionSubmittedPayload'
+      bindings:
+        kafka:
+          key:
+            type: string
+            format: uuid
+            description: '`disruption_id`.'
+
+    DisruptionResolved:
+      name: DisruptionResolved
+      title: Сбой закрыт
+      summary: Решение применено, билет выпущен, план обновлён.
+      traits:
+        - $ref: '#/components/messageTraits/commonEnvelope'
+      payload:
+        $ref: '#/components/schemas/DisruptionResolvedPayload'
+      bindings:
+        kafka:
+          key:
+            type: string
+            format: uuid
+            description: '`disruption_id`.'
+
+    PlanUpdated:
+      name: PlanUpdated
+      title: План поездки изменён
+      summary: Новая версия плана и перечень затронутых участников.
+      traits:
+        - $ref: '#/components/messageTraits/commonEnvelope'
+      payload:
+        $ref: '#/components/schemas/PlanUpdatedPayload'
+      bindings:
+        kafka:
+          key:
+            type: string
+            format: uuid
+            description: '`trip_id` — порядок версий плана значим.'
+
+    TripCompleted:
+      name: TripCompleted
+      title: Поездка завершена
+      summary: Запускает отсчёт срока удержания паспортных данных.
+      traits:
+        - $ref: '#/components/messageTraits/commonEnvelope'
+      payload:
+        $ref: '#/components/schemas/TripCompletedPayload'
+      bindings:
+        kafka:
+          key:
+            type: string
+            format: uuid
+            description: '`trip_id`.'
+
+    PiiPurgeMismatch:
+      name: PiiPurgeMismatch
+      title: Расхождение по сроку удержания
+      summary: После прогона удаления осталась запись с истёкшим сроком.
+      traits:
+        - $ref: '#/components/messageTraits/commonEnvelope'
+      payload:
+        $ref: '#/components/schemas/PiiPurgeMismatchPayload'
+      bindings:
+        kafka:
+          key:
+            type: string
+            format: uuid
+            description: '`traveller_id`.'
