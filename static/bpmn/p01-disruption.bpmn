@@ -400,7 +400,6 @@
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="P-01.F23_di" bpmnElement="P-01.F23">
         <di:waypoint x="1880" y="618" />
-        <di:waypoint x="1880" y="800" />
         <di:waypoint x="1880" y="775" />
       </bpmndi:BPMNEdge>
       <bpmndi:BPMNEdge id="P-01.F24_di" bpmnElement="P-01.F24">
