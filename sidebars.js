@@ -62,6 +62,11 @@ const sidebars = {
       items: [
         'api/events',
         'api/sync',
+        {
+          type: 'link',
+          label: 'REST API (спецификация)',
+          href: '/api/rest',
+        },
         'api/async',
       ],
     },
